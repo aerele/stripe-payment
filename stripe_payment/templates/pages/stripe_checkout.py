@@ -200,14 +200,20 @@ def make_payment(
 
 	gateway_controller = get_gateway_controller(reference_doctype, reference_docname, payment_gateway)
 
-	if is_a_subscription(reference_doctype, reference_docname):
-		reference = frappe.get_doc(reference_doctype, reference_docname)
-		data = reference.create_subscription("stripe", gateway_controller, data)
-	else:
-		data = frappe.get_doc("Stripe Settings", gateway_controller).create_request(data)
-
-	frappe.db.commit()
-	return data
+	try:
+		if is_a_subscription(reference_doctype, reference_docname):
+			reference = frappe.get_doc(reference_doctype, reference_docname)
+			data = reference.create_subscription("stripe", gateway_controller, data)
+		else:
+			data = frappe.get_doc("Stripe Settings", gateway_controller).create_request(data)
+		frappe.db.commit()
+		return data
+	except Exception:
+		# Card charged at Stripe but ERPNext settlement failed: roll back the claim so
+		# payment_intent.succeeded reconciles it, and show the buyer a neutral result.
+		frappe.db.rollback()
+		frappe.log_error(frappe.get_traceback(), "Stripe embedded settlement failed; webhook will reconcile")
+		return {"redirect_to": "payment-success", "status": "Processing"}
 
 
 def is_a_subscription(reference_doctype, reference_docname):

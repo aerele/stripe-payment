@@ -199,6 +199,8 @@ def checkout_success(session_id, gateway):
 		result = finalize_checkout_session(settings, session_id) or {}
 		frappe.db.commit()
 	except Exception:
+		# Undo the claim so the checkout.session.completed webhook can re-settle.
+		frappe.db.rollback()
 		frappe.log_error(frappe.get_traceback(), "Stripe checkout return failed")
 
 	redirect_url = result.get("redirect_to") or ("payment-success" if result else "payment-failed")

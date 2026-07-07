@@ -5,7 +5,7 @@
 
 import frappe
 import stripe
-from frappe.utils import flt, getdate, now_datetime
+from frappe.utils import add_to_date, flt, getdate, now_datetime
 
 from stripe_payment.gateway.client import from_minor_units, get_stripe_client
 from stripe_payment.gateway.subscriptions import link_stripe_subscription
@@ -202,14 +202,11 @@ def _find_period_sales_invoice(erpnext_sub, invoice):
 def _generate_and_find_sales_invoice(erpnext_sub, invoice):
 	"""Stripe billed before ERPNext's scheduler — generate the period SI, then re-find."""
 	_, end = _invoice_period(invoice)
-	try:
-		sub_doc = frappe.get_doc("Subscription", erpnext_sub)
-		# No commit here: keep SI generation in the webhook's transaction so a later
-		# Payment Entry failure rolls back the SI too (handle_event retries the event).
-		sub_doc.process(posting_date=end or getdate(now_datetime()))
-	except Exception:
-		frappe.log_error(frappe.get_traceback(), "Stripe: could not generate subscription invoice")
-		return None
+	sub_doc = frappe.get_doc("Subscription", erpnext_sub)
+	# No commit here: keep SI generation in the webhook's transaction so a later Payment
+	# Entry failure rolls back the SI too. A generation failure must PROPAGATE (not be
+	# swallowed into a terminal "Ignored") so handle_event marks the log Failed and retries.
+	sub_doc.process(posting_date=end or getdate(now_datetime()))
 	return _find_period_sales_invoice(erpnext_sub, invoice)
 
 
@@ -291,11 +288,21 @@ def process_refund(event, settings):
 
 
 def sweep_pending():
-	"""Scheduler: retry webhook events that failed processing (dropped/erroring deliveries)."""
+	"""Scheduler: retry webhook events that FAILED or were stranded mid-processing.
+
+	"Failed" rows are transient errors already marked for retry. "Received" rows older
+	than a few minutes are events whose worker died after the dedupe row was committed
+	but before the outcome was written (a hard crash) — otherwise handle_event would
+	treat redeliveries as duplicates forever. route_event is idempotent, so replay is safe.
+	"""
 	MAX_RETRIES = 5
+	stale_cutoff = add_to_date(now_datetime(), minutes=-10)
 	rows = frappe.get_all(
 		"Stripe Webhook Log",
-		filters={"status": "Failed", "retry_count": ("<", MAX_RETRIES)},
+		or_filters=[
+			{"status": "Failed", "retry_count": ("<", MAX_RETRIES)},
+			{"status": "Received", "creation": ("<", stale_cutoff)},
+		],
 		fields=["name", "stripe_settings", "payload", "retry_count"],
 		limit=50,
 	)

@@ -287,7 +287,11 @@ class StripeSettings(GatewayControllerMixin, Document):
 		exists for the underlying invoice. The Payment Entry's submission is what
 		flips the Payment Request status to "Paid" (via ERPNext's PE -> PR sync).
 		"""
-		if pr.docstatus != 1 or pr.status == "Paid":
+		# Serialize concurrent settlements of the SAME Payment Request (two tabs / a
+		# retried session, each with its own Integration Request). claim_integration_request
+		# only locks the per-IR row, so without this both flows could book a Payment Entry.
+		locked_status = frappe.db.get_value("Payment Request", pr.name, "status", for_update=True)
+		if pr.docstatus != 1 or locked_status == "Paid":
 			return
 		if pr.payment_channel == "Phone":
 			pr.db_set({"status": "Paid", "outstanding_amount": 0})
@@ -302,6 +306,10 @@ class StripeSettings(GatewayControllerMixin, Document):
 
 		if pr.reference_name and get_existing_payment_entry(pr.reference_name):
 			return  # the invoice is already settled by a Payment Entry
+		if not pr.reference_name and frappe.db.exists(
+			"Payment Entry", {"reference_no": pr.name, "docstatus": 1}
+		):
+			return  # a reference-less request already settled (PE keyed on the request name)
 
 		# Settle as Administrator: the Guest checkout return / webhook can't read the Sales Invoice.
 		original_user = frappe.session.user
@@ -326,11 +334,10 @@ class StripeSettings(GatewayControllerMixin, Document):
 
 		if self.flags.status_changed_to == "Completed":
 			if self.data.reference_doctype and self.data.reference_docname:
-				custom_redirect_to = None
-				try:
-					custom_redirect_to = self.authorize_reference()
-				except Exception:
-					frappe.log_error(frappe.get_traceback())
+				# Settlement errors must NOT be swallowed. On the webhook path they
+				# propagate to handle_event (rollback -> Failed -> Stripe retry); the
+				# browser entry points roll back the claim and show a neutral result.
+				custom_redirect_to = self.authorize_reference()
 
 				if custom_redirect_to:
 					redirect_to = custom_redirect_to
