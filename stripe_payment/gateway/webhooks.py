@@ -1,8 +1,8 @@
 # Copyright (c) Frappe Technologies Pvt. Ltd. and contributors
 # License: MIT. See LICENSE
 #
-# Stripe webhook verification, dedupe and dispatch. The HTTP endpoint stays at
-# payments.payment_gateways.doctype.stripe_settings.webhooks and delegates here.
+# Stripe webhook verification, dedupe and dispatch. The HTTP endpoint lives at
+# stripe_payment.stripe.doctype.stripe_settings.webhooks and delegates here.
 
 import frappe
 
