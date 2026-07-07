@@ -48,6 +48,17 @@ def reconcile_recurring_invoice(event, settings):
 	if frappe.db.exists("Payment Entry", {"reference_no": invoice.get("id"), "docstatus": 1}):
 		return {"status_label": "Ignored"}
 
+	# The first cycle is often already settled by the checkout return, whose Payment
+	# Entry carries the same invoice PaymentIntent (not the invoice id). Dedupe on that
+	# too so checkout.session.completed and invoice.paid cannot both book the first cycle.
+	pi = invoice.get("payment_intent")
+	if (
+		pi
+		and frappe.db.has_column("Payment Entry", "stripe_payment_intent")
+		and frappe.db.exists("Payment Entry", {"stripe_payment_intent": pi, "docstatus": 1})
+	):
+		return {"status_label": "Ignored"}
+
 	erpnext_sub = _find_linked_subscription(invoice, settings)
 	if not erpnext_sub:
 		return {"status_label": "Ignored"}
