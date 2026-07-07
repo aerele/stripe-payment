@@ -5,6 +5,7 @@ import json
 import frappe
 from frappe import _
 from frappe.utils import cint, fmt_money
+from payment_core.utils import get_reference_amount, guard_payment_reference
 
 from stripe_payment.stripe.doctype.stripe_settings.stripe_settings import (
 	get_gateway_controller,
@@ -102,41 +103,6 @@ def get_api_key(doc, gateway_controller):
 
 def get_header_image(doc, gateway_controller):
 	return frappe.db.get_value("Stripe Settings", gateway_controller, "header_img")
-
-
-def guard_payment_reference(reference_doctype, reference_docname):
-	"""Guard the guest-exposed payment endpoints against arbitrary references.
-
-	The reference must be a real document. Authenticated callers must also have
-	read access; guests legitimately cannot (Payment Request grants no Guest
-	permission — the checkout return settles as Administrator for the same
-	reason), so for them the existence check is the guard.
-	"""
-	if not (
-		reference_doctype and reference_docname and frappe.db.exists(reference_doctype, reference_docname)
-	):
-		frappe.throw(_("Invalid payment reference."), frappe.PermissionError)
-	if frappe.session.user != "Guest":
-		frappe.has_permission(reference_doctype, "read", reference_docname, throw=True)
-
-
-def get_reference_amount(reference_doctype, reference_docname):
-	"""Authoritative payable amount + currency, read server-side from the reference.
-
-	Never trust a client-supplied amount: without this an attacker can post any
-	value (e.g. 0.01) and settle a full order for a token amount. Payment
-	Requests carry the payable total in `grand_total`.
-	"""
-	meta = frappe.get_meta(reference_doctype)
-	amount_field = "grand_total" if meta.has_field("grand_total") else "amount"
-	if not meta.has_field(amount_field):
-		frappe.throw(_("Cannot determine the payable amount for {0}.").format(reference_doctype))
-	fields = [amount_field] + (["currency"] if meta.has_field("currency") else [])
-	row = frappe.db.get_value(reference_doctype, reference_docname, fields, as_dict=True)
-	if not row:
-		# Reference vanished between the guard's exists check and here (TOCTOU).
-		frappe.throw(_("Payment reference {0} no longer exists.").format(reference_docname))
-	return row.get(amount_field), row.get("currency")
 
 
 @frappe.whitelist(allow_guest=True)  # nosemgrep: frappe-semgrep-rules.rules.security.guest-whitelisted-method

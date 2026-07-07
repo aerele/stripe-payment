@@ -356,11 +356,6 @@ def get_gateway_controller(doctype, docname, payment_gateway=None):
 	return get_gateway_controller_name(doctype, docname, payment_gateway)
 
 
-# Backward-compat aliases for module-level helpers relocated into the service modules.
-_success_redirect = references.success_redirect
-_settings_owning_intent = refunds._settings_owning_intent
-
-
 def clear_webhook_secret_cache():
 	# Single source of the cache key lives in gateway.webhooks (the reader).
 	from stripe_payment.gateway.webhooks import clear_cache
