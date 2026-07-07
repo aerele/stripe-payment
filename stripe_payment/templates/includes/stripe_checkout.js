@@ -107,7 +107,9 @@ function doConfirm() {
 		elements: elements,
 		redirect: 'if_required',
 		confirmParams: {
-			receipt_email: $('input[name=cardholder-email]').val()
+			receipt_email: $('input[name=cardholder-email]').val(),
+			// Redirect methods (e.g. UPI) return here; card / inline 3DS resolve without it.
+			return_url: window.location.href.split('#')[0]
 		}
 	}).then(function (result) {
 		if (result.error) {
@@ -119,35 +121,56 @@ function doConfirm() {
 
 		var intent = result.paymentIntent;
 		if (intent && (intent.status === 'succeeded' || intent.status === 'processing')) {
-			frappe.call({
-				method: "stripe_payment.templates.pages.stripe_checkout.make_payment",
-				freeze: true,
-				headers: { "X-Requested-With": "XMLHttpRequest" },
-				args: {
-					payment_intent: intent.id,
-					data: checkoutData.data,
-					reference_doctype: checkoutData.reference_doctype,
-					reference_docname: checkoutData.reference_docname,
-					payment_gateway: checkoutData.payment_gateway
-				},
-				callback: function (r) {
-					var msg = r.message || {};
-					$('#submit').hide();
-					if (msg.status === "Completed" || msg.status === "Pending") {
-						// Pending = async method (ACH/SEPA) accepted and still settling, not a failure.
-						$('.success').show();
-					} else {
-						$('.error').show();
-					}
-					redirectAfter(msg);
-				},
-				error: function () {
-					// Payment already captured; keep the button disabled to avoid a double-charge.
-					$('#submit').hide();
-					showError(__('Your payment was received and is being processed. Please do not pay again — if anything looks wrong, contact us.'));
-					$('.error').hide();
-				}
-			});
+			finalizeIntent(intent);
+		} else {
+			showError(__('The payment could not be completed.'));
+			setSubmitting(false);
+		}
+	});
+}
+
+function finalizeIntent(intent) {
+	// Hand the confirmed/processing intent to the server to settle; the
+	// payment_intent.succeeded webhook is the authoritative backstop.
+	frappe.call({
+		method: "stripe_payment.templates.pages.stripe_checkout.make_payment",
+		freeze: true,
+		headers: { "X-Requested-With": "XMLHttpRequest" },
+		args: {
+			payment_intent: intent.id,
+			data: checkoutData.data,
+			reference_doctype: checkoutData.reference_doctype,
+			reference_docname: checkoutData.reference_docname,
+			payment_gateway: checkoutData.payment_gateway
+		},
+		callback: function (r) {
+			var msg = r.message || {};
+			$('#submit').hide();
+			if (msg.status === "Completed" || msg.status === "Pending") {
+				// Pending = async method (UPI/ACH/SEPA) accepted and still settling, not a failure.
+				$('.success').show();
+			} else {
+				$('.error').show();
+			}
+			redirectAfter(msg);
+		},
+		error: function () {
+			// Payment already captured; keep the button hidden to avoid a double-charge.
+			$('#submit').hide();
+			showError(__('Your payment was received and is being processed. Please do not pay again — if anything looks wrong, contact us.'));
+			$('.error').hide();
+		}
+	});
+}
+
+function handleRedirectReturn(secret) {
+	// A redirect method (e.g. UPI) sent the buyer back here. Retrieve the intent and
+	// hand it to the server; it may be succeeded or still processing.
+	setSubmitting(true);
+	stripe.retrievePaymentIntent(secret).then(function (result) {
+		var intent = result.paymentIntent;
+		if (intent && (intent.status === 'succeeded' || intent.status === 'processing')) {
+			finalizeIntent(intent);
 		} else {
 			showError(__('The payment could not be completed.'));
 			setSubmitting(false);
@@ -156,6 +179,11 @@ function doConfirm() {
 }
 
 frappe.ready(function () {
+	var returnedSecret = new URLSearchParams(window.location.search).get('payment_intent_client_secret');
+	if (returnedSecret) {
+		handleRedirectReturn(returnedSecret);
+		return;
+	}
 	mountPaymentElement();
 	$('#submit').off("click").on("click", function (e) {
 		e.preventDefault();
