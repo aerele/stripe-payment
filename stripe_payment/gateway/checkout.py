@@ -12,12 +12,12 @@ from frappe.utils import get_url
 
 from stripe_payment.gateway.client import get_stripe_client, to_minor_units
 from stripe_payment.gateway.customers import get_party_for_reference, resolve_stripe_customer
+from stripe_payment.gateway.payment_intents import claim_integration_request
 from stripe_payment.gateway.references import (
 	get_stripe_metadata,
 	is_subscription_reference,
 	success_redirect,
 )
-from stripe_payment.gateway.payment_intents import claim_integration_request
 from stripe_payment.gateway.subscriptions import find_erpnext_subscription, get_subscription_line_items
 
 
@@ -111,9 +111,7 @@ def _create_subscription_checkout(settings, client, data, customer_id, metadata,
 	subscription_data = {"metadata": sub_metadata}
 
 	if (settings.subscription_billing_model or "") == "Charge Now + Defer First Cycle":
-		frappe.throw(
-			_("The 'Charge Now + Defer First Cycle' subscription billing model is not supported.")
-		)
+		frappe.throw(_("The 'Charge Now + Defer First Cycle' subscription billing model is not supported."))
 
 	return client.checkout.sessions.create(
 		{
@@ -192,6 +190,8 @@ def checkout_success(session_id, gateway):
 		result = finalize_checkout_session(settings, session_id) or {}
 		frappe.db.commit()
 	except Exception:
+		# Undo the claim so the checkout.session.completed webhook can re-settle.
+		frappe.db.rollback()
 		frappe.log_error(frappe.get_traceback(), "Stripe checkout return failed")
 
 	redirect_url = result.get("redirect_to") or "payment-success"
