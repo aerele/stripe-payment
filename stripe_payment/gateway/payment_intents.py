@@ -9,8 +9,15 @@ import frappe
 import stripe
 from frappe import _
 from frappe.integrations.utils import create_request_log
+from frappe.utils import flt
+from payment_core.utils import get_reference_amount
 
-from stripe_payment.gateway.client import get_stripe_client, idempotency_key, to_minor_units
+from stripe_payment.gateway.client import (
+	from_minor_units,
+	get_stripe_client,
+	idempotency_key,
+	to_minor_units,
+)
 from stripe_payment.gateway.customers import resolve_stripe_customer
 from stripe_payment.gateway.references import get_stripe_metadata, success_redirect
 
@@ -288,6 +295,36 @@ def finalize_payment_intent(settings, intent, integration_request=None):
 
 	if settings.integration_request.status == "Completed":
 		return {"redirect_to": success_redirect(metadata), "status": "Completed"}
+
+	# Refuse to auto-settle if the amount actually charged diverges from the order
+	# (e.g. grand_total edited between PaymentIntent creation and settlement). Flag for
+	# manual reconciliation instead of silently booking the wrong amount.
+	reference_doctype = metadata.get("reference_doctype")
+	reference_docname = metadata.get("reference_docname")
+	if reference_doctype and reference_docname:
+		charged = from_minor_units(
+			intent.get("amount_received") or intent.get("amount") or 0, intent.get("currency")
+		)
+		expected, _cur = get_reference_amount(reference_doctype, reference_docname)
+		if expected is not None and abs(flt(charged) - flt(expected)) > 0.01:
+			if settings.integration_request.status != "Failed":
+				frappe.log_error(
+					f"Stripe {intent.get('id')} charged {charged} but {reference_doctype} "
+					f"{reference_docname} is {expected}",
+					"Stripe amount mismatch — not auto-settled",
+				)
+				try:
+					frappe.get_doc(reference_doctype, reference_docname).add_comment(
+						"Comment",
+						_(
+							"Stripe payment {0} charged {1} but this order is {2}. "
+							"Reconcile manually — not auto-settled."
+						).format(intent.get("id"), charged, expected),
+					)
+				except Exception:
+					pass
+				settings.integration_request.db_set("status", "Failed", update_modified=False)
+			return {"redirect_to": "payment-failed", "status": "Mismatch"}
 
 	if not claim_integration_request(settings):
 		# Lost the race to a concurrent webhook/redirect — already settled.

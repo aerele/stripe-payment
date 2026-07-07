@@ -147,50 +147,58 @@ def create_subscription_on_stripe(stripe_settings):
 	if party:
 		metadata["erpnext_customer"] = party
 
+	if (stripe_settings.subscription_billing_model or "") == "Charge Now + Defer First Cycle":
+		frappe.throw(_("The 'Charge Now + Defer First Cycle' subscription billing model is not supported."))
+
+	create_args = {
+		"customer": customer_id,
+		"items": items,
+		"metadata": metadata,
+		"payment_behavior": "default_incomplete",
+		"payment_settings": {"save_default_payment_method": "on_subscription"},
+		"expand": ["latest_invoice.payment_intent"],
+	}
+
 	try:
-		create_args = {
-			"customer": customer_id,
-			"items": items,
-			"metadata": metadata,
-			"payment_behavior": "default_incomplete",
-			"payment_settings": {"save_default_payment_method": "on_subscription"},
-			"expand": ["latest_invoice.payment_intent"],
-		}
-
-		if (stripe_settings.subscription_billing_model or "") == "Charge Now + Defer First Cycle":
-			frappe.throw(
-				_("The 'Charge Now + Defer First Cycle' subscription billing model is not supported.")
-			)
-
 		subscription = client.subscriptions.create(
 			create_args, {"idempotency_key": idempotency_key("sub", pr.name)}
 		)
-		intent = getattr(getattr(subscription, "latest_invoice", None), "payment_intent", None)
-		# Stamp the first invoice's PaymentIntent (refundable), not the sub id (sub_xxx).
-		output_id = intent.id if intent is not None else subscription.id
-		stripe_settings.integration_request.db_set("output", output_id, update_modified=False)
-		link_stripe_subscription(erpnext_sub, subscription.id, customer_id)
-
-		if subscription.status in ("active", "trialing"):
-			stripe_settings.integration_request.db_set("status", "Completed", update_modified=False)
-			stripe_settings.flags.status_changed_to = "Completed"
-		elif subscription.status == "incomplete":
-			# First invoice needs client-side confirmation; invoice.paid webhook settles it.
-			if intent is not None:
-				return {
-					"requires_action": True,
-					"client_secret": intent.client_secret,
-					"payment_intent": intent.id,
-					"status": "Pending",
-				}
-			stripe_settings.integration_request.db_set("status", "Pending", update_modified=False)
-		else:
-			stripe_settings.integration_request.db_set("status", "Failed", update_modified=False)
-			frappe.log_error(f"Stripe Subscription ID {subscription.id}: status {subscription.status}")
-
 	except Exception:
+		# Creation itself failed — nothing created, nothing to hand back or clean up.
 		stripe_settings.integration_request.db_set("status", "Failed", update_modified=False)
 		stripe_settings.log_error("Unable to create Stripe subscription")
+		stripe_settings.data.setdefault("reference_doctype", "Payment Request")
+		stripe_settings.data.setdefault("reference_docname", pr.name)
+		return stripe_settings.finalize_request()
+
+	intent = getattr(getattr(subscription, "latest_invoice", None), "payment_intent", None)
+	# Stamp the first invoice's PaymentIntent (refundable), not the sub id (sub_xxx).
+	output_id = intent.id if intent is not None else subscription.id
+
+	# Best-effort bookkeeping: a failure here must NOT lose the client_secret below,
+	# else the incomplete subscription is never confirmed and Stripe auto-cancels it.
+	try:
+		stripe_settings.integration_request.db_set("output", output_id, update_modified=False)
+		link_stripe_subscription(erpnext_sub, subscription.id, customer_id)
+	except Exception:
+		stripe_settings.log_error("Stripe subscription bookkeeping failed (subscription was created)")
+
+	if subscription.status in ("active", "trialing"):
+		stripe_settings.integration_request.db_set("status", "Completed", update_modified=False)
+		stripe_settings.flags.status_changed_to = "Completed"
+	elif subscription.status == "incomplete":
+		# First invoice needs client-side confirmation; invoice.paid webhook settles it.
+		if intent is not None:
+			return {
+				"requires_action": True,
+				"client_secret": intent.client_secret,
+				"payment_intent": intent.id,
+				"status": "Pending",
+			}
+		stripe_settings.integration_request.db_set("status", "Pending", update_modified=False)
+	else:
+		stripe_settings.integration_request.db_set("status", "Failed", update_modified=False)
+		frappe.log_error(f"Stripe Subscription ID {subscription.id}: status {subscription.status}")
 
 	stripe_settings.data.setdefault("reference_doctype", "Payment Request")
 	stripe_settings.data.setdefault("reference_docname", pr.name)
