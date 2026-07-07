@@ -227,6 +227,43 @@ def _create_payment_entry(si, invoice, settings):
 	return pe.name
 
 
+def record_intent_processing(event, settings):
+	"""payment_intent.processing — async method (e.g. UPI) accepted and still settling.
+
+	Interim only: payment_intent.succeeded performs the settlement. Recording it keeps
+	the event out of the "Ignored" bucket so the timeline shows the pending state.
+	"""
+	intent = event["data"]["object"]
+	if intent.get("invoice"):
+		return {"status_label": "Ignored"}  # subscription invoices settle via invoice.paid
+	meta = dict(intent.get("metadata") or {})
+	return {
+		"status_label": "Processed",
+		"reference_doctype": meta.get("reference_doctype"),
+		"reference_name": meta.get("reference_docname"),
+	}
+
+
+def mark_intent_failed(event, settings):
+	"""payment_intent.payment_failed — a one-off async payment (e.g. UPI) failed after
+	'processing'. Mark its Integration Request Failed so it is not left stuck Pending."""
+	intent = event["data"]["object"]
+	if intent.get("invoice"):
+		return {"status_label": "Ignored"}  # subscription failures via invoice.payment_failed
+	ir = frappe.db.get_value("Integration Request", {"output": intent.get("id")}, "name")
+	if not ir:
+		return {"status_label": "Ignored"}
+	doc = frappe.get_doc("Integration Request", ir)
+	if doc.status != "Completed":
+		doc.db_set("status", "Failed", update_modified=False)
+	meta = dict(intent.get("metadata") or {})
+	return {
+		"status_label": "Processed",
+		"reference_doctype": meta.get("reference_doctype"),
+		"reference_name": meta.get("reference_docname"),
+	}
+
+
 def reconcile_one_off(event, settings):
 	"""payment_intent.succeeded — backstop for one-off payments.
 
@@ -328,6 +365,8 @@ def sweep_pending():
 _HANDLERS = {
 	"checkout.session.completed": reconcile_checkout_session,
 	"payment_intent.succeeded": reconcile_one_off,
+	"payment_intent.processing": record_intent_processing,
+	"payment_intent.payment_failed": mark_intent_failed,
 	"setup_intent.succeeded": handle_setup_intent_succeeded,
 	"invoice.paid": reconcile_recurring_invoice,
 	"invoice.payment_failed": mark_dunning,

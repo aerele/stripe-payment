@@ -79,7 +79,7 @@ def create_payment_intent_for_checkout(settings, data):
 			"metadata": get_stripe_metadata(
 				settings, data=data, integration_request=integration_request.name
 			),
-			"automatic_payment_methods": {"enabled": True, "allow_redirects": "never"},
+			"automatic_payment_methods": {"enabled": True, "allow_redirects": "always"},
 		}
 	)
 	integration_request.db_set("output", intent.id, update_modified=False)
@@ -146,7 +146,7 @@ def create_payment_intent_on_stripe(settings):
 			"receipt_email": settings.data.get("payer_email"),
 			"customer": customer_id,
 			"metadata": get_stripe_metadata(settings, integration_request=settings.integration_request.name),
-			"automatic_payment_methods": {"enabled": True, "allow_redirects": "never"},
+			"automatic_payment_methods": {"enabled": True, "allow_redirects": "always"},
 		}
 		# Store the card for off-session reuse only with explicit consent.
 		if settings.data.get("save_card") and customer_id:
