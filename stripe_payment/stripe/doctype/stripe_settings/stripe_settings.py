@@ -11,7 +11,7 @@ import frappe
 from frappe import _
 from frappe.integrations.utils import create_request_log, make_get_request
 from frappe.model.document import Document
-from frappe.utils import call_hook_method, cint, flt, get_url
+from frappe.utils import call_hook_method, flt, get_url
 from payment_core.api.controllers import get_gateway_controller_name
 from payment_core.api.gateway import GatewayControllerMixin
 from payment_core.utils import create_payment_gateway
@@ -173,7 +173,8 @@ class StripeSettings(GatewayControllerMixin, Document):
 				)
 			}
 			try:
-				make_get_request(url="https://api.stripe.com/v1/charges", headers=header)
+				# PaymentIntents is the current API; /v1/charges is deprecated.
+				make_get_request(url="https://api.stripe.com/v1/payment_intents?limit=1", headers=header)
 			except Exception:
 				frappe.throw(_("Seems Publishable Key or Secret Key is wrong !!!"))
 
@@ -198,11 +199,7 @@ class StripeSettings(GatewayControllerMixin, Document):
 		return get_url(f"./stripe_checkout?{urlencode(kwargs)}")
 
 	def create_request(self, data):
-		import stripe
-
 		self.data = frappe._dict(data)
-		stripe.api_key = self.get_password(fieldname="secret_key", raise_exception=False)
-		stripe.default_http_client = stripe.http_client.RequestsClient()
 
 		try:
 			self.integration_request = create_request_log(self.data, service_name="Stripe")
@@ -221,15 +218,19 @@ class StripeSettings(GatewayControllerMixin, Document):
 			}
 
 	def create_charge_on_stripe(self):
-		import stripe
+		"""Legacy Charges API path (card token). Uses the shared Stripe client."""
+		from stripe_payment.gateway.client import get_stripe_client, to_minor_units
 
 		try:
-			charge = stripe.Charge.create(
-				amount=cint(flt(self.data.amount) * 100),
-				currency=self.data.currency,
-				source=self.data.stripe_token_id,
-				description=self.data.description,
-				receipt_email=self.data.payer_email,
+			client = get_stripe_client(self)
+			charge = client.charges.create(
+				{
+					"amount": to_minor_units(self.data.amount, self.data.currency),
+					"currency": (self.data.currency or "").lower(),
+					"source": self.data.stripe_token_id,
+					"description": self.data.description,
+					"receipt_email": self.data.payer_email,
+				}
 			)
 
 			if charge.captured is True:
@@ -244,6 +245,45 @@ class StripeSettings(GatewayControllerMixin, Document):
 
 		return self.finalize_request()
 
+	def authorize_reference(self):
+		"""Settle the paid reference document.
+
+		Custom doctypes that define ``on_payment_authorized`` keep working.
+		Payment Request is settled explicitly when that hook is absent.
+		"""
+		ref = frappe.get_doc(self.data.reference_doctype, self.data.reference_docname)
+		if hasattr(ref, "on_payment_authorized"):
+			return ref.run_method("on_payment_authorized", self.flags.status_changed_to)
+		if ref.doctype == "Payment Request":
+			self.settle_payment_request(ref)
+		return None
+
+	def settle_payment_request(self, pr):
+		"""Mark a submitted Payment Request paid and create its Payment Entry."""
+		if pr.docstatus != 1 or pr.status == "Paid":
+			return
+		if pr.payment_channel == "Phone":
+			pr.db_set({"status": "Paid", "outstanding_amount": 0})
+			return
+
+		from payment_core.utils import erpnext_app_import_guard
+
+		with erpnext_app_import_guard():
+			from erpnext.accounts.doctype.payment_request.payment_request import (
+				get_existing_payment_entry,
+			)
+
+		if pr.reference_name and get_existing_payment_entry(pr.reference_name):
+			return
+
+		# Guest checkout cannot read/write Sales Invoice / PE; elevate for settlement only.
+		original_user = frappe.session.user
+		try:
+			frappe.set_user("Administrator")  # nosemgrep
+			pr.set_as_paid()
+		finally:
+			frappe.set_user(original_user)  # nosemgrep
+
 	def finalize_request(self):
 		redirect_to = self.data.get("redirect_to") or None
 		redirect_message = self.data.get("redirect_message") or None
@@ -254,9 +294,7 @@ class StripeSettings(GatewayControllerMixin, Document):
 			if self.data.reference_doctype and self.data.reference_docname:
 				custom_redirect_to = None
 				try:
-					custom_redirect_to = frappe.get_doc(
-						self.data.reference_doctype, self.data.reference_docname
-					).run_method("on_payment_authorized", self.flags.status_changed_to)
+					custom_redirect_to = self.authorize_reference()
 				except Exception:
 					frappe.log_error(frappe.get_traceback())
 
