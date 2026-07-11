@@ -8,17 +8,20 @@ app_license = "mit"
 # Depends on the shared base app.
 required_apps = ["payment_core"]
 
-# Shared gateway service package (client/constants/references; features extend it).
 payment_gateway_module = {"Stripe": "stripe_payment.gateway"}
 
-# Legacy subscription create (parity with monorepo payments.stripe_integration).
+# Programmatic subscription create (ERPNext Payment Request / payment_core dispatcher).
 gateway_subscription_handler = {
-	"stripe": "stripe_payment.payment_gateways.stripe_integration.create_stripe_subscription",
+	"stripe": "stripe_payment.gateway.subscriptions.create_stripe_subscription",
+}
+
+# Auto-sync Subscription Plan price to Stripe when enabled on Stripe Settings.
+doc_events = {
+	"Subscription Plan": {"validate": "stripe_payment.gateway.subscriptions.sync_stripe_price"},
 }
 
 after_install = "stripe_payment.install.after_install"
 before_uninstall = "stripe_payment.install.before_uninstall"
-# Ensure Customer.stripe_customer_id exists on sites that already had the app installed.
 after_migrate = ["stripe_payment.install.after_install"]
 
 add_to_apps_screen = [

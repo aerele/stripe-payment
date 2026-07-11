@@ -16,7 +16,7 @@ from payment_core.api.controllers import get_gateway_controller_name
 from payment_core.api.gateway import GatewayControllerMixin
 from payment_core.utils import create_payment_gateway
 
-from stripe_payment.gateway import customers
+from stripe_payment.gateway import checkout, customers
 
 currency_wise_minimum_charge_amount = {
 	"JPY": 50,
@@ -198,7 +198,13 @@ class StripeSettings(GatewayControllerMixin, Document):
 				)
 
 	def get_payment_url(self, **kwargs):
-		return get_url(f"./stripe_checkout?{urlencode(kwargs)}")
+		return checkout.get_payment_url(self, **kwargs)
+
+	def create_checkout_session(self, data):
+		return checkout.create_checkout_session(self, data)
+
+	def finalize_checkout_session(self, session_id):
+		return checkout.finalize_checkout_session(self, session_id)
 
 	def create_request(self, data):
 		self.data = frappe._dict(data)
@@ -226,7 +232,14 @@ class StripeSettings(GatewayControllerMixin, Document):
 		return customers.resolve_stripe_customer(stripe, data)
 
 	def create_charge_on_stripe(self):
-		"""Legacy Charges API path (card token). Uses the shared Stripe client."""
+		"""Legacy Charges API path (card token). Uses the shared Stripe client.
+
+		One-time ``tok_…`` sources must not be paired with ``customer``. Stripe
+		treats ``source`` as a source already on that customer, so
+		``customer`` + unattached token fails with "does not have a linked
+		source". Customer reuse belongs on PaymentIntent / Hosted / subscription
+		paths (attach PM or use a linked card), not on raw token Charges.
+		"""
 		from stripe_payment.gateway.client import get_stripe_client, to_minor_units
 
 		try:
@@ -238,9 +251,12 @@ class StripeSettings(GatewayControllerMixin, Document):
 				"description": self.data.description,
 				"receipt_email": self.data.payer_email,
 			}
-			customer_id = customers.resolve_stripe_customer(client, self.data)
-			if customer_id:
-				params["customer"] = customer_id
+			# Best-effort: cache Customer.stripe_customer_id for later PI/Hosted/sub
+			# flows. Never put customer on this token charge (see docstring).
+			try:
+				customers.resolve_stripe_customer(client, self.data)
+			except Exception:
+				frappe.log_error(frappe.get_traceback(), "Stripe customer resolve (legacy charge)")
 			charge = client.charges.create(params)
 
 			if charge.captured is True:
@@ -328,3 +344,9 @@ class StripeSettings(GatewayControllerMixin, Document):
 
 def get_gateway_controller(doctype, docname, payment_gateway=None):
 	return get_gateway_controller_name(doctype, docname, payment_gateway)
+
+
+@frappe.whitelist(allow_guest=True)  # nosemgrep: frappe-semgrep-rules.rules.security.guest-whitelisted-method
+def checkout_success(session_id: str, gateway: str):
+	"""Return landing for Hosted Checkout — verify the session, then redirect."""
+	return checkout.checkout_success(session_id, gateway)

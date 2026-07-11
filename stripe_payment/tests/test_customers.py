@@ -93,3 +93,46 @@ class TestStripeCustomers(FrappeTestCase):
 		self.assertEqual(cid, "cus_x")
 		create.assert_called_once()
 		self.assertEqual(create.call_args.kwargs["customer"], "CUST-001")
+
+	def test_legacy_token_charge_does_not_pass_customer(self):
+		"""Charges with tok_… must not include customer (Stripe rejects unattached tokens)."""
+		from stripe_payment.stripe.doctype.stripe_settings.stripe_settings import StripeSettings
+
+		settings = StripeSettings({"doctype": "Stripe Settings", "name": "Stripe"})
+		settings.data = frappe._dict(
+			amount=200,
+			currency="INR",
+			stripe_token_id="tok_test_abc",
+			description="Payment Request for ACC-SINV-1",
+			payer_email="a@example.com",
+		)
+		settings.integration_request = MagicMock()
+		settings.flags = frappe._dict()
+		settings.finalize_request = MagicMock(return_value={"status": "Completed"})
+
+		client = MagicMock()
+		charge = MagicMock(captured=True)
+		client.charges.create.return_value = charge
+
+		with (
+			patch(
+				"stripe_payment.gateway.client.get_stripe_client",
+				return_value=client,
+			),
+			patch(
+				"stripe_payment.gateway.client.to_minor_units",
+				return_value=20000,
+			),
+			patch(
+				"stripe_payment.gateway.customers.resolve_stripe_customer",
+				return_value="cus_Un9PuBBu6urEfA",
+			) as resolve,
+		):
+			settings.create_charge_on_stripe()
+
+		resolve.assert_called_once()
+		client.charges.create.assert_called_once()
+		params = client.charges.create.call_args.args[0]
+		self.assertEqual(params["source"], "tok_test_abc")
+		self.assertEqual(params["amount"], 20000)
+		self.assertNotIn("customer", params)
