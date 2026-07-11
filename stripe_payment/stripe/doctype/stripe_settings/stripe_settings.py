@@ -16,6 +16,8 @@ from payment_core.api.controllers import get_gateway_controller_name
 from payment_core.api.gateway import GatewayControllerMixin
 from payment_core.utils import create_payment_gateway
 
+from stripe_payment.gateway import customers
+
 currency_wise_minimum_charge_amount = {
 	"JPY": 50,
 	"MXN": 10,
@@ -217,21 +219,29 @@ class StripeSettings(GatewayControllerMixin, Document):
 				"status": 401,
 			}
 
+	def get_party_for_reference(self, data):
+		return customers.get_party_for_reference(data)
+
+	def resolve_stripe_customer(self, stripe, data):
+		return customers.resolve_stripe_customer(stripe, data)
+
 	def create_charge_on_stripe(self):
 		"""Legacy Charges API path (card token). Uses the shared Stripe client."""
 		from stripe_payment.gateway.client import get_stripe_client, to_minor_units
 
 		try:
 			client = get_stripe_client(self)
-			charge = client.charges.create(
-				{
-					"amount": to_minor_units(self.data.amount, self.data.currency),
-					"currency": (self.data.currency or "").lower(),
-					"source": self.data.stripe_token_id,
-					"description": self.data.description,
-					"receipt_email": self.data.payer_email,
-				}
-			)
+			params = {
+				"amount": to_minor_units(self.data.amount, self.data.currency),
+				"currency": (self.data.currency or "").lower(),
+				"source": self.data.stripe_token_id,
+				"description": self.data.description,
+				"receipt_email": self.data.payer_email,
+			}
+			customer_id = customers.resolve_stripe_customer(client, self.data)
+			if customer_id:
+				params["customer"] = customer_id
+			charge = client.charges.create(params)
 
 			if charge.captured is True:
 				self.integration_request.db_set("status", "Completed", update_modified=False)
