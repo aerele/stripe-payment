@@ -8,10 +8,8 @@ app_license = "mit"
 # Depends on the shared base app.
 required_apps = ["payment_core"]
 
-# Register the Stripe settings controller with payment_core's gateway registry.
-payment_gateway_module = {
-	"Stripe": "stripe_payment.stripe.doctype.stripe_settings.stripe_settings",
-}
+# Shared gateway service package (client/constants/references; features extend it).
+payment_gateway_module = {"Stripe": "stripe_payment.gateway"}
 
 # Legacy subscription create (parity with monorepo payments.stripe_integration).
 gateway_subscription_handler = {
