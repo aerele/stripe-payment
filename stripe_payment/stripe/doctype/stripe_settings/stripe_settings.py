@@ -9,14 +9,14 @@ from urllib.parse import urlencode
 
 import frappe
 from frappe import _
-from frappe.integrations.utils import create_request_log, make_get_request
+from frappe.integrations.utils import make_get_request
 from frappe.model.document import Document
 from frappe.utils import call_hook_method, flt, get_url
 from payment_core.api.controllers import get_gateway_controller_name
 from payment_core.api.gateway import GatewayControllerMixin
 from payment_core.utils import create_payment_gateway
 
-from stripe_payment.gateway import customers
+from stripe_payment.gateway import customers, payment_intents
 
 currency_wise_minimum_charge_amount = {
 	"JPY": 50,
@@ -200,60 +200,38 @@ class StripeSettings(GatewayControllerMixin, Document):
 	def get_payment_url(self, **kwargs):
 		return get_url(f"./stripe_checkout?{urlencode(kwargs)}")
 
-	def create_request(self, data):
-		self.data = frappe._dict(data)
-
-		try:
-			self.integration_request = create_request_log(self.data, service_name="Stripe")
-			return self.create_charge_on_stripe()
-
-		except Exception:
-			frappe.log_error(frappe.get_traceback())
-			return {
-				"redirect_to": frappe.redirect_to_message(
-					_("Server Error"),
-					_(
-						"It seems that there is an issue with the server's stripe configuration. In case of failure, the amount will get refunded to your account."
-					),
-				),
-				"status": 401,
-			}
-
 	def get_party_for_reference(self, data):
 		return customers.get_party_for_reference(data)
 
 	def resolve_stripe_customer(self, stripe, data):
 		return customers.resolve_stripe_customer(stripe, data)
 
+	def create_request(self, data):
+		return payment_intents.create_request(self, data)
+
+	def create_payment_intent_for_checkout(self, data):
+		return payment_intents.create_payment_intent_for_checkout(self, data)
+
+	def create_payment_intent_on_stripe(self):
+		return payment_intents.create_payment_intent_on_stripe(self)
+
+	def create_setup_intent_for_card(self, data):
+		return payment_intents.create_setup_intent_for_card(self, data)
+
+	def enable_setup_future_usage(self, payment_intent, client_secret, reference_doctype, reference_docname):
+		return payment_intents.enable_setup_future_usage(
+			self, payment_intent, client_secret, reference_doctype, reference_docname
+		)
+
+	def finalize_payment_intent_by_id(self, pi_id):
+		return payment_intents.finalize_payment_intent_by_id(self, pi_id)
+
+	def finalize_payment_intent(self, intent, integration_request=None):
+		return payment_intents.finalize_payment_intent(self, intent, integration_request)
+
 	def create_charge_on_stripe(self):
-		"""Legacy Charges API path (card token). Uses the shared Stripe client."""
-		from stripe_payment.gateway.client import get_stripe_client, to_minor_units
-
-		try:
-			client = get_stripe_client(self)
-			params = {
-				"amount": to_minor_units(self.data.amount, self.data.currency),
-				"currency": (self.data.currency or "").lower(),
-				"source": self.data.stripe_token_id,
-				"description": self.data.description,
-				"receipt_email": self.data.payer_email,
-			}
-			customer_id = customers.resolve_stripe_customer(client, self.data)
-			if customer_id:
-				params["customer"] = customer_id
-			charge = client.charges.create(params)
-
-			if charge.captured is True:
-				self.integration_request.db_set("status", "Completed", update_modified=False)
-				self.flags.status_changed_to = "Completed"
-
-			else:
-				frappe.log_error(charge.failure_message, "Stripe Payment not completed")
-
-		except Exception:
-			frappe.log_error(frappe.get_traceback())
-
-		return self.finalize_request()
+		# Deprecated Charges API shim; delegates to PaymentIntents (supports save_card).
+		return payment_intents.create_payment_intent_on_stripe(self)
 
 	def authorize_reference(self):
 		"""Settle the paid reference document.

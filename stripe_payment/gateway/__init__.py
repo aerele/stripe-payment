@@ -16,6 +16,13 @@ from stripe_payment.gateway.customers import (
 	get_party_for_reference,
 	resolve_stripe_customer,
 )
+from stripe_payment.gateway.payment_intents import (
+	create_payment_intent_for_checkout,
+	create_request,
+	create_setup_intent_for_card,
+	enable_setup_future_usage,
+	finalize_payment_intent,
+)
 from stripe_payment.gateway.references import (
 	get_stripe_metadata,
 	is_subscription_reference,
