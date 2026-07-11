@@ -11,6 +11,11 @@ from stripe_payment.gateway.client import (
 	to_minor_units,
 )
 from stripe_payment.gateway.constants import STRIPE_API_VERSION, ZERO_DECIMAL_CURRENCIES
+from stripe_payment.gateway.customers import (
+	get_or_create_customer,
+	get_party_for_reference,
+	resolve_stripe_customer,
+)
 from stripe_payment.gateway.references import (
 	get_stripe_metadata,
 	is_subscription_reference,

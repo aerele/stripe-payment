@@ -16,6 +16,11 @@ gateway_subscription_handler = {
 	"stripe": "stripe_payment.payment_gateways.stripe_integration.create_stripe_subscription",
 }
 
+after_install = "stripe_payment.install.after_install"
+before_uninstall = "stripe_payment.install.before_uninstall"
+# Ensure Customer.stripe_customer_id exists on sites that already had the app installed.
+after_migrate = ["stripe_payment.install.after_install"]
+
 add_to_apps_screen = [
 	{
 		"name": "stripe_payment",
