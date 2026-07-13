@@ -292,7 +292,7 @@
   },
   {
    "default": "Bill From Cycle One",
-   "description": "Bill From Cycle One: Stripe bills price×quantity immediately as the first invoice. Charge Now + Defer First Cycle is not supported.",
+   "description": "Bill From Cycle One: Stripe bills plan price×qty as the first subscription invoice. Charge Now + Defer First Cycle: charge the Payment Request amount immediately (one-time), and start the first recurring plan invoice after one plan interval (free trial).",
    "fieldname": "subscription_billing_model",
    "fieldtype": "Select",
    "label": "Subscription Billing Model",

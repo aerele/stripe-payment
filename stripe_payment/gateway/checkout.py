@@ -19,7 +19,12 @@ from stripe_payment.gateway.references import (
 	is_subscription_reference,
 	success_redirect,
 )
-from stripe_payment.gateway.subscriptions import find_erpnext_subscription, get_subscription_line_items
+from stripe_payment.gateway.subscriptions import (
+	apply_charge_now_defer_first_cycle,
+	find_erpnext_subscription,
+	get_subscription_line_items,
+	is_charge_now_defer_first_cycle,
+)
 
 
 def get_payment_url(settings, **kwargs):
@@ -102,9 +107,6 @@ def _create_subscription_checkout(settings, client, data, customer_id, metadata,
 	if party:
 		sub_metadata["erpnext_customer"] = party
 
-	if (settings.subscription_billing_model or "") == "Charge Now + Defer First Cycle":
-		frappe.throw(_("The 'Charge Now + Defer First Cycle' subscription billing model is not supported."))
-
 	params = {
 		"mode": "subscription",
 		"line_items": line_items,
@@ -114,6 +116,16 @@ def _create_subscription_checkout(settings, client, data, customer_id, metadata,
 		"metadata": sub_metadata,
 		"subscription_data": {"metadata": sub_metadata},
 	}
+	if is_charge_now_defer_first_cycle(settings):
+		# One-time PR amount now + free trial over the first plan interval.
+		apply_charge_now_defer_first_cycle(
+			params,
+			amount=data.amount,
+			currency=data.currency,
+			reference_doctype=dt,
+			reference_docname=dn,
+			description=data.get("description") or data.get("title"),
+		)
 	if customer_id:
 		params["customer"] = customer_id
 	return client.checkout.sessions.create(params)
