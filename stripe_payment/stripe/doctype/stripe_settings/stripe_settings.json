@@ -272,12 +272,12 @@
    "label": "Configuration"
   },
   {
-   "default": "Embedded Elements",
-   "description": "Embedded Elements renders the Stripe Payment Element on this site (PaymentIntents + SCA/3DS).",
+   "default": "Hosted Checkout",
+   "description": "Hosted Checkout redirects to a Stripe-hosted page (SCA/3DS ready). Embedded Elements renders the form on this site.",
    "fieldname": "checkout_mode",
    "fieldtype": "Select",
    "label": "Checkout Mode",
-   "options": "Embedded Elements"
+   "options": "Hosted Checkout\nEmbedded Elements"
   }
  ],
  "has_web_view": 0,

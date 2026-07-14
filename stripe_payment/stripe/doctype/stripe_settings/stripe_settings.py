@@ -16,7 +16,7 @@ from payment_core.api.controllers import get_gateway_controller_name
 from payment_core.api.gateway import GatewayControllerMixin
 from payment_core.utils import create_payment_gateway
 
-from stripe_payment.gateway import payment_intents
+from stripe_payment.gateway import checkout, payment_intents
 
 currency_wise_minimum_charge_amount = {
 	"JPY": 50,
@@ -198,8 +198,13 @@ class StripeSettings(GatewayControllerMixin, Document):
 				)
 
 	def get_payment_url(self, **kwargs):
-		# Embedded Elements is the checkout mode delivered by this feature PR.
-		return get_url(f"./stripe_checkout?{urlencode(kwargs)}")
+		return checkout.get_payment_url(self, **kwargs)
+
+	def create_checkout_session(self, data):
+		return checkout.create_checkout_session(self, data)
+
+	def finalize_checkout_session(self, session_id):
+		return checkout.finalize_checkout_session(self, session_id)
 
 	def create_request(self, data):
 		return payment_intents.create_request(self, data)
@@ -296,3 +301,9 @@ class StripeSettings(GatewayControllerMixin, Document):
 
 def get_gateway_controller(doctype, docname, payment_gateway=None):
 	return get_gateway_controller_name(doctype, docname, payment_gateway)
+
+
+@frappe.whitelist(allow_guest=True)  # nosemgrep: frappe-semgrep-rules.rules.security.guest-whitelisted-method
+def checkout_success(session_id: str, gateway: str):
+	"""Return landing for Hosted Checkout — verify the session, then redirect."""
+	return checkout.checkout_success(session_id, gateway)

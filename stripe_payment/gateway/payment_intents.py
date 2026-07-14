@@ -186,7 +186,10 @@ def assert_intent_matches_reference(settings, intent):
 def claim_integration_request(settings):
 	"""Atomically claim the Integration Request for settlement.
 
-	Returns True only for the winning caller so finalize_request() runs once.
+	The redirect and a later webhook can arrive concurrently. A SELECT ... FOR UPDATE
+	serialises them: the first flips status to Completed and settles; the second
+	blocks, then sees Completed and backs off — so finalize_request() runs exactly
+	once (no duplicate Payment Entry). Returns True only for the winning caller.
 	"""
 	status = frappe.db.get_value(
 		"Integration Request", settings.integration_request.name, "status", for_update=True
