@@ -1,11 +1,16 @@
 # Copyright (c) 2021, Frappe Technologies Pvt. Ltd. and Contributors
 # License: MIT. See LICENSE
+#
+# Embedded Stripe Checkout page + guest APIs for PaymentIntent create/finalize.
+
 import json
 
 import frappe
 from frappe import _
 from frappe.utils import cint, fmt_money
+from payment_core.utils import get_reference_amount, guard_payment_reference
 
+from stripe_payment.gateway.references import assert_reference_payable
 from stripe_payment.stripe.doctype.stripe_settings.stripe_settings import (
 	get_gateway_controller,
 )
@@ -28,10 +33,10 @@ expected_keys = (
 def get_context(context):
 	context.no_cache = 1
 
-	# all these keys exist in form_dict
 	if not (set(expected_keys) - set(list(frappe.form_dict))):
 		for key in expected_keys:
 			context[key] = frappe.form_dict[key]
+		_redirect_if_not_payable(context.reference_doctype, context.reference_docname)
 		gateway_controller = get_gateway_controller(
 			context.reference_doctype, context.reference_docname, context.payment_gateway
 		)
@@ -44,9 +49,12 @@ def get_context(context):
 			payment_plan = frappe.db.get_value(
 				context.reference_doctype, context.reference_docname, "payment_plan"
 			)
-			recurrence = frappe.db.get_value("Payment Plan", payment_plan, "recurrence")
-
-			context["amount"] = context["amount"] + " " + _(recurrence)
+			# get_value returns None when the plan or field is missing — no exists() needed.
+			recurrence = (
+				frappe.db.get_value("Payment Plan", payment_plan, "recurrence") if payment_plan else None
+			)
+			if recurrence:
+				context["amount"] = context["amount"] + " " + _(recurrence)
 
 	else:
 		frappe.redirect_to_message(
@@ -55,6 +63,16 @@ def get_context(context):
 		)
 		frappe.local.flags.redirect_location = frappe.local.response.location
 		raise frappe.Redirect
+
+
+def _redirect_if_not_payable(reference_doctype, reference_docname):
+	"""Show a message page when the Payment Request is paid or cancelled."""
+	try:
+		assert_reference_payable(reference_doctype, reference_docname)
+	except frappe.ValidationError as e:
+		frappe.redirect_to_message(_("Payment not available"), str(e))
+		frappe.local.flags.redirect_location = frappe.local.response.location
+		raise frappe.Redirect from e
 
 
 def get_api_key(doc, gateway_controller):
@@ -70,16 +88,52 @@ def get_header_image(doc, gateway_controller):
 
 
 @frappe.whitelist(allow_guest=True)  # nosemgrep: frappe-semgrep-rules.rules.security.guest-whitelisted-method
-def make_payment(
-	stripe_token_id: str,
+def create_payment_intent(
 	data: str,
 	reference_doctype: str | None = None,
 	reference_docname: str | None = None,
 	payment_gateway: str | None = None,
 ):
+	"""Embedded Elements: create an unconfirmed PaymentIntent, return its client_secret."""
+	guard_payment_reference(reference_doctype, reference_docname)
+	assert_reference_payable(reference_doctype, reference_docname)
 	data = json.loads(data)
+	data["reference_doctype"] = reference_doctype
+	data["reference_docname"] = reference_docname
+	data["amount"], currency = get_reference_amount(reference_doctype, reference_docname)
+	if currency:
+		data["currency"] = currency
+	gateway_controller = get_gateway_controller(reference_doctype, reference_docname, payment_gateway)
+	settings = frappe.get_doc("Stripe Settings", gateway_controller)
+	result = settings.create_payment_intent_for_checkout(frappe._dict(data))
+	# Guest request must persist the Integration Request / PI before the browser confirms.
+	frappe.db.commit()  # nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit
+	return result
 
-	data.update({"stripe_token_id": stripe_token_id})
+
+@frappe.whitelist(allow_guest=True)  # nosemgrep: frappe-semgrep-rules.rules.security.guest-whitelisted-method
+def make_payment(
+	data: str,
+	reference_doctype: str | None = None,
+	reference_docname: str | None = None,
+	payment_gateway: str | None = None,
+	payment_intent: str | None = None,
+	stripe_token_id: str | None = None,
+):
+	guard_payment_reference(reference_doctype, reference_docname)
+	assert_reference_payable(reference_doctype, reference_docname)
+	data = json.loads(data)
+	data["reference_doctype"] = reference_doctype
+	data["reference_docname"] = reference_docname
+	data["amount"], currency = get_reference_amount(reference_doctype, reference_docname)
+	if currency:
+		data["currency"] = currency
+
+	if payment_intent:
+		data.update({"payment_intent": payment_intent})
+	if stripe_token_id:
+		# Backward-compat with the pre-PaymentIntents checkout JS.
+		data.update({"stripe_token_id": stripe_token_id})
 
 	gateway_controller = get_gateway_controller(reference_doctype, reference_docname, payment_gateway)
 
@@ -89,7 +143,8 @@ def make_payment(
 	else:
 		data = frappe.get_doc("Stripe Settings", gateway_controller).create_request(data)
 
-	frappe.db.commit()
+	# Guest request must persist settlement before the redirect response is sent.
+	frappe.db.commit()  # nosemgrep
 	return data
 
 
