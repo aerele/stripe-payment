@@ -265,6 +265,19 @@
    "set_only_once": 0,
    "translatable": 0,
    "unique": 0
+  },
+  {
+   "fieldname": "configuration_section",
+   "fieldtype": "Section Break",
+   "label": "Configuration"
+  },
+  {
+   "default": "Hosted Checkout",
+   "description": "Hosted Checkout redirects to a Stripe-hosted page (SCA/3DS ready). Embedded Elements renders the form on this site.",
+   "fieldname": "checkout_mode",
+   "fieldtype": "Select",
+   "label": "Checkout Mode",
+   "options": "Hosted Checkout\nEmbedded Elements"
   }
  ],
  "has_web_view": 0,
