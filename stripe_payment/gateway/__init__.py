@@ -1,7 +1,8 @@
 # Copyright (c) Frappe Technologies Pvt. Ltd. and contributors
 # License: MIT. See LICENSE
 #
-# Public Stripe service API. Shared primitives + Hosted Checkout entry points.
+# Public Stripe service API. Shared primitives, Hosted Checkout, customers,
+# and PaymentIntent entry points.
 
 from stripe_payment.gateway.checkout import (
 	checkout_success,
@@ -16,6 +17,11 @@ from stripe_payment.gateway.client import (
 	to_minor_units,
 )
 from stripe_payment.gateway.constants import STRIPE_API_VERSION, ZERO_DECIMAL_CURRENCIES
+from stripe_payment.gateway.customers import (
+	get_or_create_customer,
+	get_party_for_reference,
+	resolve_stripe_customer,
+)
 from stripe_payment.gateway.payment_intents import (
 	claim_integration_request,
 	create_payment_intent_for_checkout,
