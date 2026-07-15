@@ -5,6 +5,12 @@
 {%- block header -%}
 {% endblock %}
 
+{% block style %}
+<style>
+	{% include "templates/pages/stripe_checkout.css" %}
+</style>
+{% endblock %}
+
 {% block script %}
 <script src="https://js.stripe.com/v3/"></script>
 <script>{% include "templates/includes/stripe_checkout.js" %}</script>

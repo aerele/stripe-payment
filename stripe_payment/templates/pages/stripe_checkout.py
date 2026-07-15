@@ -10,6 +10,7 @@ from frappe import _
 from frappe.utils import cint, fmt_money
 from payment_core.utils import get_reference_amount, guard_payment_reference
 
+from stripe_payment.gateway.references import assert_reference_payable
 from stripe_payment.stripe.doctype.stripe_settings.stripe_settings import (
 	get_gateway_controller,
 )
@@ -70,6 +71,7 @@ def create_payment_intent(
 ):
 	"""Embedded Elements: create an unconfirmed PaymentIntent, return its client_secret."""
 	guard_payment_reference(reference_doctype, reference_docname)
+	assert_reference_payable(reference_doctype, reference_docname)
 	data = json.loads(data)
 	data["reference_doctype"] = reference_doctype
 	data["reference_docname"] = reference_docname
@@ -93,6 +95,7 @@ def save_card(
 ):
 	"""Create a SetupIntent so a card can be saved off-session (authenticated users only)."""
 	guard_payment_reference(reference_doctype, reference_docname)
+	assert_reference_payable(reference_doctype, reference_docname)
 	data = json.loads(data)
 	data["reference_doctype"] = reference_doctype
 	data["reference_docname"] = reference_docname
@@ -114,6 +117,7 @@ def set_card_consent(
 ):
 	"""Record save-my-card consent on an unconfirmed checkout PaymentIntent."""
 	guard_payment_reference(reference_doctype, reference_docname)
+	assert_reference_payable(reference_doctype, reference_docname)
 	gateway_controller = get_gateway_controller(reference_doctype, reference_docname, payment_gateway)
 	settings = frappe.get_doc("Stripe Settings", gateway_controller)
 	result = settings.enable_setup_future_usage(
@@ -134,6 +138,7 @@ def make_payment(
 	stripe_token_id: str | None = None,
 ):
 	guard_payment_reference(reference_doctype, reference_docname)
+	assert_reference_payable(reference_doctype, reference_docname)
 	data = json.loads(data)
 	data["reference_doctype"] = reference_doctype
 	data["reference_docname"] = reference_docname

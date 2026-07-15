@@ -272,12 +272,12 @@
    "label": "Configuration"
   },
   {
-   "default": "Embedded Elements",
-   "description": "Embedded Elements supports save-my-card consent on PaymentIntents.",
+   "default": "Hosted Checkout",
+   "description": "Hosted Checkout redirects to a Stripe-hosted page (SCA/3DS ready). Embedded Elements renders the Payment Element on this site and supports save-my-card consent.",
    "fieldname": "checkout_mode",
    "fieldtype": "Select",
    "label": "Checkout Mode",
-   "options": "Embedded Elements"
+   "options": "Hosted Checkout\nEmbedded Elements"
   }
  ],
  "has_web_view": 0,

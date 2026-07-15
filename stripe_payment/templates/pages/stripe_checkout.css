@@ -141,7 +141,7 @@
   }
 }
 
-/* Card Details hosts Stripe's multi-field Payment Element (Link + card + wallets),
+/* Card Details hosts Stripe's multi-field Payment Element (Link + card + save-card),
    which sizes itself. Override the single-line .field box so it is never clipped and
    the Pay button drops below it instead of overlapping. */
 .stripe label.card-details {

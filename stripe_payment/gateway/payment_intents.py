@@ -12,20 +12,29 @@ from frappe.integrations.utils import create_request_log
 
 from stripe_payment.gateway.client import get_stripe_client, idempotency_key, to_minor_units
 from stripe_payment.gateway.customers import resolve_stripe_customer
-from stripe_payment.gateway.references import get_stripe_metadata, success_redirect
+from stripe_payment.gateway.references import (
+	assert_reference_payable,
+	get_stripe_metadata,
+	success_redirect,
+)
 
 
 def create_request(settings, data):
-	settings.data = frappe._dict(data)
-	settings.stripe = get_stripe_client(settings)
-
 	try:
+		settings.data = frappe._dict(data)
+		settings.stripe = get_stripe_client(settings)
+
+		assert_reference_payable(
+			settings.data.get("reference_doctype"), settings.data.get("reference_docname")
+		)
 		if settings.data.get("payment_intent"):
 			return finalize_payment_intent_by_id(settings, settings.data.get("payment_intent"))
 
 		settings.integration_request = create_request_log(settings.data, service_name="Stripe")
 		return create_payment_intent_on_stripe(settings)
 
+	except frappe.ValidationError:
+		raise
 	except Exception:
 		frappe.log_error(frappe.get_traceback())
 		return {
@@ -58,6 +67,8 @@ def create_setup_intent_for_card(settings, data):
 
 def create_payment_intent_for_checkout(settings, data):
 	"""Embedded Elements: unconfirmed PaymentIntent (with Stripe customer when resolvable)."""
+	data = frappe._dict(data)
+	assert_reference_payable(data.get("reference_doctype"), data.get("reference_docname"))
 	client = get_stripe_client(settings)
 
 	reused = _reuse_open_checkout_intent(client, data)
@@ -184,6 +195,13 @@ def assert_intent_matches_reference(settings, intent):
 
 
 def claim_integration_request(settings):
+	"""Atomically claim the Integration Request for settlement.
+
+	The redirect and a later webhook can arrive concurrently. A SELECT ... FOR UPDATE
+	serialises them: the first flips status to Completed and settles; the second
+	blocks, then sees Completed and backs off — so finalize_request() runs exactly
+	once (no duplicate Payment Entry). Returns True only for the winning caller.
+	"""
 	status = frappe.db.get_value(
 		"Integration Request", settings.integration_request.name, "status", for_update=True
 	)
