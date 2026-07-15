@@ -8,6 +8,7 @@ app_license = "mit"
 # Depends on the shared base app.
 required_apps = ["payment_core"]
 
+# Shared gateway service package (client/constants/references; features extend it).
 payment_gateway_module = {"Stripe": "stripe_payment.gateway"}
 
 # Programmatic subscription create (ERPNext Payment Request / payment_core dispatcher).
@@ -22,6 +23,7 @@ doc_events = {
 
 after_install = "stripe_payment.install.after_install"
 before_uninstall = "stripe_payment.install.before_uninstall"
+# Ensure Customer.stripe_customer_id exists on sites that already had the app installed.
 after_migrate = ["stripe_payment.install.after_install"]
 
 add_to_apps_screen = [

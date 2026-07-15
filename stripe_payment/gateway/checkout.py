@@ -1,7 +1,8 @@
 # Copyright (c) Frappe Technologies Pvt. Ltd. and contributors
 # License: MIT. See LICENSE
 #
-# Hosted Checkout: one-off payment + subscription mode (this feature PR).
+# Hosted Checkout: one-off payment + subscription mode, session creation,
+# get_payment_url routing, and the return handler.
 
 from urllib.parse import quote, urlencode
 
@@ -28,6 +29,7 @@ from stripe_payment.gateway.subscriptions import (
 
 
 def get_payment_url(settings, **kwargs):
+	"""Route to Hosted Checkout or on-site stripe_checkout based on settings."""
 	# Subscriptions always use Hosted Checkout (native recurring billing).
 	if is_subscription_reference(kwargs):
 		return create_checkout_session(settings, kwargs)
@@ -39,6 +41,7 @@ def get_payment_url(settings, **kwargs):
 def create_checkout_session(settings, data):
 	"""Hosted Checkout: build a Stripe-hosted payment or subscription page."""
 	data = frappe._dict(data)
+	# Never trust a client-supplied amount/currency or an unvalidated reference.
 	guard_payment_reference(data.reference_doctype, data.reference_docname)
 	data.amount, currency = get_reference_amount(data.reference_doctype, data.reference_docname)
 	if currency:
@@ -132,7 +135,10 @@ def _create_subscription_checkout(settings, client, data, customer_id, metadata,
 
 
 def finalize_checkout_session(settings, session_id):
-	"""Confirm a Hosted Checkout session and run on_payment_authorized."""
+	"""Confirm a Hosted Checkout session and run on_payment_authorized.
+
+	Idempotent: callable from both the success redirect and a later webhook.
+	"""
 	client = get_stripe_client(settings)
 	session = client.checkout.sessions.retrieve(session_id)
 	metadata = dict(session.get("metadata") or {})
@@ -153,6 +159,7 @@ def finalize_checkout_session(settings, session_id):
 
 	if session.get("payment_status") not in ("paid", "no_payment_required"):
 		if session.get("status") == "complete":
+			# Async method (bank debit): session complete, settlement deferred.
 			return {"redirect_to": success_redirect(metadata), "status": "Pending"}
 		return {"redirect_to": "payment-failed", "status": "Failed"}
 
@@ -199,6 +206,7 @@ def checkout_success(session_id, gateway):
 	try:
 		settings = frappe.get_doc("Stripe Settings", gateway)
 		result = finalize_checkout_session(settings, session_id) or {}
+		# Guest return URL must persist settlement before the redirect response.
 		frappe.db.commit()  # nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "Stripe checkout return failed")

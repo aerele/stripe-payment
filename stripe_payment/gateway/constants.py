@@ -25,3 +25,41 @@ ZERO_DECIMAL_CURRENCIES = {
 	"XOF",
 	"XPF",
 }
+
+# Customer + Subscription mapping (features extend this dict).
+STRIPE_CUSTOM_FIELDS = {
+	"Customer": [
+		{
+			"fieldname": "stripe_customer_id",
+			"fieldtype": "Data",
+			"label": "Stripe Customer ID",
+			"read_only": 1,
+			"no_copy": 1,
+			"print_hide": 1,
+			"insert_after": "default_currency",
+			"module": "Stripe",
+		}
+	],
+	"Subscription": [
+		{
+			"fieldname": "stripe_subscription_id",
+			"fieldtype": "Data",
+			"label": "Stripe Subscription ID",
+			"read_only": 1,
+			"no_copy": 1,
+			"print_hide": 1,
+			"insert_after": "status",
+			"module": "Stripe",
+		},
+		{
+			"fieldname": "stripe_customer_id",
+			"fieldtype": "Data",
+			"label": "Stripe Customer ID",
+			"read_only": 1,
+			"no_copy": 1,
+			"print_hide": 1,
+			"insert_after": "stripe_subscription_id",
+			"module": "Stripe",
+		},
+	],
+}

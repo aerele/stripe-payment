@@ -273,7 +273,7 @@
   },
   {
    "default": "Hosted Checkout",
-   "description": "Hosted Checkout redirects to a Stripe-hosted page. Subscriptions always use Hosted Checkout.",
+   "description": "Hosted Checkout redirects to a Stripe-hosted page (SCA/3DS ready). Embedded Elements renders the Payment Element on this site and supports save-my-card consent.",
    "fieldname": "checkout_mode",
    "fieldtype": "Select",
    "label": "Checkout Mode",

@@ -1,7 +1,8 @@
 # Copyright (c) Frappe Technologies Pvt. Ltd. and contributors
 # License: MIT. See LICENSE
 #
-# Public Stripe service API.
+# Public Stripe service API. Shared primitives, Hosted Checkout, customers,
+# card-saving, PaymentIntent entry points, and subscriptions.
 
 from stripe_payment.gateway.checkout import (
 	checkout_success,
@@ -21,8 +22,16 @@ from stripe_payment.gateway.customers import (
 	get_party_for_reference,
 	resolve_stripe_customer,
 )
-from stripe_payment.gateway.payment_intents import claim_integration_request
+from stripe_payment.gateway.payment_intents import (
+	claim_integration_request,
+	create_payment_intent_for_checkout,
+	create_request,
+	create_setup_intent_for_card,
+	enable_setup_future_usage,
+	finalize_payment_intent,
+)
 from stripe_payment.gateway.references import (
+	assert_reference_payable,
 	get_stripe_metadata,
 	is_subscription_reference,
 	success_redirect,
