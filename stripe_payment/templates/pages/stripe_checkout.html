@@ -5,6 +5,12 @@
 {%- block header -%}
 {% endblock %}
 
+{% block style %}
+<style>
+	{% include "templates/pages/stripe_checkout.css" %}
+</style>
+{% endblock %}
+
 {% block script %}
 <script src="https://js.stripe.com/v3/"></script>
 <script>{% include "templates/includes/stripe_checkout.js" %}</script>
@@ -46,6 +52,12 @@
 			</label>
 			</div>
 
+			</div>
+			<div class="group col-12">
+				<label class="d-flex align-items-center save-card" style="gap: 6px;">
+					<input type="checkbox" id="save-card" name="save-card" value="1"/>
+					<span>{{ _("Save my card") }}</span>
+				</label>
 			</div>
 			<button type="submit" class="submit mb-4" id="submit">{{_('Pay')}} {{amount}}</button>
 			<div class="outcome text-center">

@@ -1,7 +1,6 @@
-// Embedded Elements checkout using PaymentIntents + PaymentElement.
-// Flow: create an (unconfirmed) PaymentIntent on the server -> mount the
-// PaymentElement with its client_secret -> confirm client-side (handles 3DS)
-// -> hand the confirmed PaymentIntent id back to the server to finalize.
+// Embedded Elements + optional save-card consent.
+// Flow: create PaymentIntent -> mount PaymentElement -> optional set_card_consent
+// -> confirm client-side -> make_payment finalize.
 
 var stripe = Stripe("{{ publishable_key }}");
 
@@ -78,7 +77,28 @@ function confirmPayment() {
 		return;
 	}
 	setSubmitting(true);
-	doConfirm();
+	recordConsentThen(doConfirm);
+}
+
+function recordConsentThen(next) {
+	// Record save-card consent before confirming, so cards store only on opt-in.
+	if (!$('#save-card').is(':checked') || !paymentIntentId) {
+		next();
+		return;
+	}
+	frappe.call({
+		method: "stripe_payment.templates.pages.stripe_checkout.set_card_consent",
+		headers: { "X-Requested-With": "XMLHttpRequest" },
+		args: {
+			payment_intent: paymentIntentId,
+			client_secret: clientSecret,
+			reference_doctype: checkoutData.reference_doctype,
+			reference_docname: checkoutData.reference_docname,
+			payment_gateway: checkoutData.payment_gateway
+		},
+		// Don't block payment if the consent write fails; the card just won't be saved.
+		always: function () { next(); }
+	});
 }
 
 function doConfirm() {
@@ -113,7 +133,6 @@ function doConfirm() {
 					var msg = r.message || {};
 					$('#submit').hide();
 					if (msg.status === "Completed" || msg.status === "Pending") {
-						// Pending = async method accepted and still settling, not a failure.
 						$('.success').show();
 					} else {
 						$('.error').show();
@@ -121,7 +140,6 @@ function doConfirm() {
 					redirectAfter(msg);
 				},
 				error: function () {
-					// Payment already captured; keep the button disabled to avoid a double-charge.
 					$('#submit').hide();
 					showError(__('Your payment was received and is being processed. Please do not pay again — if anything looks wrong, contact us.'));
 					$('.error').hide();

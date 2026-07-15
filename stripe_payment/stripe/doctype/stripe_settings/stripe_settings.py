@@ -230,44 +230,17 @@ class StripeSettings(GatewayControllerMixin, Document):
 	def resolve_stripe_customer(self, stripe, data):
 		return customers.resolve_stripe_customer(stripe, data)
 
+	def create_setup_intent_for_card(self, data):
+		return payment_intents.create_setup_intent_for_card(self, data)
+
+	def enable_setup_future_usage(self, payment_intent, client_secret, reference_doctype, reference_docname):
+		return payment_intents.enable_setup_future_usage(
+			self, payment_intent, client_secret, reference_doctype, reference_docname
+		)
+
 	def create_charge_on_stripe(self):
-		"""Legacy Charges API path (card token). Uses the shared Stripe client.
-
-		One-time ``tok_…`` sources must not be paired with ``customer``. Stripe
-		treats ``source`` as a source already on that customer, so
-		``customer`` + unattached token fails with "does not have a linked
-		source". Customer reuse belongs on PaymentIntent / Hosted / subscription
-		paths (attach PM or use a linked card), not on raw token Charges.
-		"""
-		from stripe_payment.gateway.client import get_stripe_client, to_minor_units
-
-		try:
-			client = get_stripe_client(self)
-			params = {
-				"amount": to_minor_units(self.data.amount, self.data.currency),
-				"currency": (self.data.currency or "").lower(),
-				"source": self.data.stripe_token_id,
-				"description": self.data.description,
-				"receipt_email": self.data.payer_email,
-			}
-			# Best-effort: cache Customer.stripe_customer_id for later PI/Hosted/sub
-			# flows. Never put customer on this token charge (see docstring).
-			try:
-				customers.resolve_stripe_customer(client, self.data)
-			except Exception:
-				frappe.log_error(frappe.get_traceback(), "Stripe customer resolve (legacy charge)")
-			charge = client.charges.create(params)
-
-			if charge.captured is True:
-				self.integration_request.db_set("status", "Completed", update_modified=False)
-				self.flags.status_changed_to = "Completed"
-			else:
-				frappe.log_error(charge.failure_message, "Stripe Payment not completed")
-
-		except Exception:
-			frappe.log_error(frappe.get_traceback())
-
-		return self.finalize_request()
+		# Deprecated Charges API shim; delegates to PaymentIntents (supports save_card).
+		return payment_intents.create_payment_intent_on_stripe(self)
 
 	def authorize_reference(self):
 		"""Settle the paid reference document.

@@ -2,7 +2,7 @@
 # License: MIT. See LICENSE
 #
 # Public Stripe service API. Shared primitives, Hosted Checkout, customers,
-# and PaymentIntent entry points.
+# card-saving, and PaymentIntent entry points.
 
 from stripe_payment.gateway.checkout import (
 	checkout_success,
@@ -26,6 +26,8 @@ from stripe_payment.gateway.payment_intents import (
 	claim_integration_request,
 	create_payment_intent_for_checkout,
 	create_request,
+	create_setup_intent_for_card,
+	enable_setup_future_usage,
 	finalize_payment_intent,
 )
 from stripe_payment.gateway.references import (
