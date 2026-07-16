@@ -2,7 +2,7 @@
 # License: MIT. See LICENSE
 #
 # Public Stripe service API. Shared primitives, Hosted Checkout, customers,
-# card-saving, and PaymentIntent entry points.
+# card-saving, PaymentIntent entry points, and subscriptions.
 
 from stripe_payment.gateway.checkout import (
 	checkout_success,
@@ -35,4 +35,11 @@ from stripe_payment.gateway.references import (
 	get_stripe_metadata,
 	is_subscription_reference,
 	success_redirect,
+)
+from stripe_payment.gateway.subscriptions import (
+	create_stripe_subscription,
+	find_erpnext_subscription,
+	get_subscription_line_items,
+	link_stripe_subscription,
+	sync_stripe_price,
 )
