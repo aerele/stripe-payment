@@ -166,6 +166,17 @@ class StripeSettings(GatewayControllerMixin, Document):
 		call_hook_method("payment_gateway_enabled", gateway="Stripe-" + self.gateway_name)
 		if not self.flags.ignore_mandatory:
 			self.validate_stripe_credentails()
+		self.set_webhook_endpoint()
+		clear_webhook_secret_cache()
+
+	def on_trash(self):
+		clear_webhook_secret_cache()
+
+	def set_webhook_endpoint(self):
+		"""Show the admin which URL to register as a Stripe webhook endpoint."""
+		endpoint = get_url("/api/method/stripe_payment.stripe.doctype.stripe_settings.webhooks")
+		if self.webhook_endpoint != endpoint:
+			self.db_set("webhook_endpoint", endpoint, update_modified=False)
 
 	def validate_stripe_credentails(self):
 		if self.publishable_key and self.secret_key:
@@ -315,6 +326,12 @@ class StripeSettings(GatewayControllerMixin, Document):
 
 def get_gateway_controller(doctype, docname, payment_gateway=None):
 	return get_gateway_controller_name(doctype, docname, payment_gateway)
+
+
+def clear_webhook_secret_cache():
+	from stripe_payment.gateway.webhooks import clear_cache
+
+	clear_cache()
 
 
 @frappe.whitelist(allow_guest=True)  # nosemgrep: frappe-semgrep-rules.rules.security.guest-whitelisted-method

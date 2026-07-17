@@ -297,6 +297,24 @@
    "fieldtype": "Select",
    "label": "Subscription Billing Model",
    "options": "Bill From Cycle One\nCharge Now + Defer First Cycle"
+  },
+  {
+   "fieldname": "webhooks_section",
+   "fieldtype": "Section Break",
+   "label": "Webhooks"
+  },
+  {
+   "description": "Stripe webhook signing secret (whsec_...). Required for the webhook endpoint to verify and process events.",
+   "fieldname": "webhook_secret",
+   "fieldtype": "Password",
+   "label": "Webhook Signing Secret"
+  },
+  {
+   "description": "Point a Stripe webhook endpoint at this URL (copy into the Stripe dashboard).",
+   "fieldname": "webhook_endpoint",
+   "fieldtype": "Data",
+   "label": "Webhook URL",
+   "read_only": 1
   }
  ],
  "has_web_view": 0,
