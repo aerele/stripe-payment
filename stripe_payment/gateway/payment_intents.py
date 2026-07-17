@@ -277,3 +277,45 @@ def finalize_payment_intent(settings, intent, integration_request=None):
 	settings.integration_request.db_set("output", intent.get("id"), update_modified=False)
 	settings.flags.status_changed_to = "Completed"
 	return settings.finalize_request()
+
+
+def settle_payment_request(settings, pr):
+	"""Mark a submitted Payment Request paid and create its Payment Entry.
+
+	Extracted from the StripeSettings controller so it's unit-testable with a
+	plain settings stub + a Payment Request mock, and so the webhook reconciler
+	can call it directly if needed. Stamps the Stripe PaymentIntent and owning
+	Stripe Settings onto the Payment Entry for refund lookups.
+	"""
+	if pr.docstatus != 1 or pr.status == "Paid":
+		return
+	if pr.payment_channel == "Phone":
+		pr.db_set({"status": "Paid", "outstanding_amount": 0})
+		return
+
+	from payment_core.utils import erpnext_app_import_guard
+
+	with erpnext_app_import_guard():
+		from erpnext.accounts.doctype.payment_request.payment_request import (
+			get_existing_payment_entry,
+		)
+
+	if pr.reference_name and get_existing_payment_entry(pr.reference_name):
+		return
+
+	# Guest checkout cannot read/write Sales Invoice / PE; elevate for settlement only.
+	original_user = frappe.session.user
+	try:
+		frappe.set_user("Administrator")  # nosemgrep
+		payment_entry = pr.set_as_paid()
+	finally:
+		frappe.set_user(original_user)  # nosemgrep
+
+	# Stamp the PaymentIntent and owning Stripe Settings onto the PE
+	# (both are needed for refunds to resolve the account locally).
+	intent_id = getattr(getattr(settings, "integration_request", None), "output", None)
+	if intent_id and payment_entry and payment_entry.meta.has_field("stripe_payment_intent"):
+		updates = {"stripe_payment_intent": intent_id}
+		if payment_entry.meta.has_field("stripe_settings"):
+			updates["stripe_settings"] = settings.name
+		frappe.db.set_value("Payment Entry", payment_entry.name, updates, update_modified=False)
