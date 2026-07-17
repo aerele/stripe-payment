@@ -168,6 +168,15 @@ class StripeSettings(GatewayControllerMixin, Document):
 		clear_webhook_secret_cache()
 		clear_api_key_cache()
 
+	@frappe.whitelist()
+	def test_connection(self):
+		"""Verify credentials with a live Stripe call.
+
+		Issued on-demand from the 'Test Connection' desk button so a slow /
+		unreachable Stripe API degrades a click, not every save.
+		"""
+		self.validate_stripe_credentails()
+
 	def on_trash(self):
 		clear_webhook_secret_cache()
 		clear_api_key_cache()
@@ -273,6 +282,11 @@ class StripeSettings(GatewayControllerMixin, Document):
 		without a full StripeSettings document.
 		"""
 		return payment_intents.settle_payment_request(self, pr)
+
+	def refund_intent(self, payment_intent, amount=None):
+		from stripe_payment.gateway import refunds
+
+		return refunds.refund_intent(self, payment_intent, amount)
 
 	def finalize_request(self):
 		redirect_to = self.data.get("redirect_to") or None
