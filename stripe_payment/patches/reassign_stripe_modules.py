@@ -8,6 +8,7 @@
 import frappe
 
 
-def execute():
-	if frappe.db.exists("DocType", "Stripe Settings"):
-		frappe.db.set_value("DocType", "Stripe Settings", "module", "Stripe", update_modified=False)
+def execute():  # Frappe patch entry point, run via patches.txt on migrate
+	for dt in ("Stripe Settings", "Stripe Webhook Log"):
+		if frappe.db.exists("DocType", dt):
+			frappe.db.set_value("DocType", dt, "module", "Stripe", update_modified=False)
