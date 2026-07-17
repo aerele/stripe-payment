@@ -39,8 +39,12 @@ def get_context(context):  # Frappe web-page hook, called by the framework to re
 		gateway_controller = get_gateway_controller(
 			context.reference_doctype, context.reference_docname, context.payment_gateway
 		)
-		context.publishable_key = get_api_key(context.reference_docname, gateway_controller)
-		context.image = get_header_image(context.reference_docname, gateway_controller)
+		# Publishable key (sandbox-aware) + header image for the checkout page.
+		publishable_key = frappe.db.get_value("Stripe Settings", gateway_controller, "publishable_key")
+		if cint(frappe.form_dict.get("use_sandbox")):
+			publishable_key = frappe.conf.sandbox_publishable_key
+		context.publishable_key = publishable_key
+		context.image = frappe.db.get_value("Stripe Settings", gateway_controller, "header_img")
 		context["amount"] = fmt_money(amount=context["amount"], currency=context["currency"])
 	else:
 		frappe.redirect_to_message(
@@ -49,17 +53,6 @@ def get_context(context):  # Frappe web-page hook, called by the framework to re
 		)
 		frappe.local.flags.redirect_location = frappe.local.response.location
 		raise frappe.Redirect
-
-
-def get_api_key(doc, gateway_controller):  # called from get_context to build page context
-	publishable_key = frappe.db.get_value("Stripe Settings", gateway_controller, "publishable_key")
-	if cint(frappe.form_dict.get("use_sandbox")):
-		publishable_key = frappe.conf.sandbox_publishable_key
-	return publishable_key
-
-
-def get_header_image(doc, gateway_controller):  # called from get_context to build page context
-	return frappe.db.get_value("Stripe Settings", gateway_controller, "header_img")
 
 
 @frappe.whitelist(allow_guest=True)  # nosemgrep: frappe-semgrep-rules.rules.security.guest-whitelisted-method
@@ -71,6 +64,11 @@ def create_payment_intent(
 ):
 	"""Embedded Elements: create an unconfirmed PaymentIntent, return its client_secret."""
 	guard_payment_reference(reference_doctype, reference_docname)
+	# Authenticated callers must own the reference; guests are validated for
+	# existence/payability by guard_payment_reference (Payment Request grants
+	# them no read perm, so has_permission would wrongly reject guest checkout).
+	if frappe.session.user != "Guest":
+		frappe.has_permission(reference_doctype, "read", reference_docname, throw=True)
 	assert_reference_payable(reference_doctype, reference_docname)
 	data = json.loads(data)
 	data["reference_doctype"] = reference_doctype

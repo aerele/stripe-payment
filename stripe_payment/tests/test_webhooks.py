@@ -59,3 +59,43 @@ class TestStripeWebhooks(FrappeTestCase):
 		}
 		result = route_event(event, MagicMock())
 		self.assertEqual(result["status_label"], "Ignored")
+
+	def test_webhooks_endpoint_rejects_bad_signature_without_processing(self):
+		"""C2: a bad/absent Stripe signature must 400 before any handler runs."""
+		import importlib
+
+		endpoint_mod = importlib.import_module("stripe_payment.stripe.doctype.stripe_settings")
+		frappe.local.request = MagicMock()
+		frappe.local.request.get_data.return_value = b"{}"
+		with (
+			patch.object(endpoint_mod, "construct_event", return_value=(None, None)),
+			patch.object(endpoint_mod, "handle_event") as handle,
+		):
+			result = endpoint_mod.webhooks()
+		self.assertEqual(result, {"status": "invalid signature"})
+		self.assertEqual(frappe.local.response["http_status_code"], 400)
+		handle.assert_not_called()
+
+	def test_webhooks_endpoint_elevates_after_signature_verification(self):
+		"""C2: a verified signature elevates to Administrator then dispatches."""
+		import importlib
+
+		endpoint_mod = importlib.import_module("stripe_payment.stripe.doctype.stripe_settings")
+		frappe.local.request = MagicMock()
+		frappe.local.request.get_data.return_value = b"{}"
+		settings = MagicMock(name="verified_settings")
+		event = {"id": "evt_ok", "type": "ping", "data": {"object": {}}}
+
+		def fake_set_user(user):
+			frappe.session.user = user
+
+		with (
+			patch.object(endpoint_mod, "construct_event", return_value=(event, settings)),
+			patch.object(endpoint_mod, "handle_event", return_value={"status": "ok"}) as handle,
+			patch.object(endpoint_mod.frappe, "set_user", side_effect=fake_set_user) as set_user,
+		):
+			endpoint_mod.webhooks()
+		# The verified event is dispatched elevated to Administrator (the signature
+		# is the auth gate; no Frappe role check applies to Stripe's request).
+		set_user.assert_any_call("Administrator")
+		handle.assert_called_once_with(event, settings)

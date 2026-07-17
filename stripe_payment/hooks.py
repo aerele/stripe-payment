@@ -16,7 +16,10 @@ gateway_subscription_handler = {
 
 # Auto-sync Subscription Plan price to Stripe when enabled on Stripe Settings.
 doc_events = {
-	"Subscription Plan": {"validate": "stripe_payment.gateway.subscriptions.sync_stripe_price"},
+	# on_update, not validate: a Stripe API timeout / rate-limit during price
+	# sync must never block a Subscription Plan save. The handler logs errors
+	# and surfaces a non-blocking message; the doc is already persisted by now.
+	"Subscription Plan": {"on_update": "stripe_payment.gateway.subscriptions.sync_stripe_price"},
 }
 
 after_install = "stripe_payment.install.after_install"
@@ -26,6 +29,8 @@ after_migrate = ["stripe_payment.install.after_install"]
 scheduler_events = {
 	"hourly": ["stripe_payment.gateway.reconciliation.sweep_pending"],
 }
+
+doctype_js = {"Payment Entry": "public/js/payment_entry_stripe.js"}
 
 add_to_apps_screen = [
 	{

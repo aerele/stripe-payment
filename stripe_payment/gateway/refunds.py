@@ -37,7 +37,7 @@ def refund_payment_entry(payment_entry: str, amount: float | None = None):
 	if not settings:
 		frappe.throw(_("Could not find the Stripe account that owns this payment."))
 
-	return refund_intent(settings, pi, flt(amount) or None)
+	return refund_intent(settings, pi, flt(amount))
 
 
 def _resolve_settings(payment_entry, payment_intent):
