@@ -31,11 +31,26 @@ def get_subscription_plan_details(reference_doctype, reference_docname):
 	)
 
 
-def get_subscription_line_items(reference_doctype, reference_docname):
-	"""Stripe subscription items [{price, quantity}] from the synced plan prices."""
+def get_subscription_line_items(reference_doctype, reference_docname, details=None):
+	"""Stripe subscription items [{price, quantity}] from the synced plan prices.
+
+	Callers that already loaded the plan details can pass them in to avoid a
+	second identical query on Subscription Plan Detail.
+	"""
+	if details is None:
+		details = get_subscription_plan_details(reference_doctype, reference_docname)
+	# Fetch every plan's synced Stripe price in one query rather than one per row.
+	prices = dict(
+		frappe.get_all(
+			"Subscription Plan",
+			filters={"name": ("in", [row.plan for row in details])},
+			fields=["name", "product_price_id"],
+			as_list=True,
+		)
+	)
 	items = []
-	for row in get_subscription_plan_details(reference_doctype, reference_docname):
-		price = frappe.db.get_value("Subscription Plan", row.plan, "product_price_id")
+	for row in details:
+		price = prices.get(row.plan)
 		if not price:
 			frappe.throw(
 				_("Subscription Plan {0} has no synced Stripe price; sync it before checkout.").format(
@@ -241,17 +256,13 @@ def create_subscription_on_stripe(stripe_settings):
 	client = stripe_settings.stripe
 	data = stripe_settings.data
 
-	pr = frappe.get_doc("Payment Request", data.reference_docname)
+	pr = frappe.db.get_value(
+		"Payment Request", data.reference_docname, ["name", "party", "party_type"], as_dict=True
+	)
 	party = pr.party if pr.party_type == "Customer" else None
-	items = get_subscription_line_items("Payment Request", pr.name)
-	plan_names = [
-		row.plan
-		for row in frappe.get_all(
-			"Subscription Plan Detail",
-			filters={"parent": pr.name, "parenttype": "Payment Request"},
-			fields=["plan"],
-		)
-	]
+	details = get_subscription_plan_details("Payment Request", pr.name)
+	items = get_subscription_line_items("Payment Request", pr.name, details=details)
+	plan_names = [row.plan for row in details]
 
 	customer_id = get_or_create_customer(
 		client, customer=party, email=data.get("payer_email"), name=data.get("payer_name") or party
