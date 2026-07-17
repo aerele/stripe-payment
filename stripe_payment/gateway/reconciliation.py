@@ -5,7 +5,7 @@
 
 import frappe
 import stripe
-from frappe.utils import flt, getdate, now_datetime
+from frappe.utils import cint, flt, getdate, now_datetime
 
 from stripe_payment.gateway.client import from_minor_units, get_stripe_client
 from stripe_payment.gateway.subscriptions import link_stripe_subscription
@@ -294,6 +294,85 @@ def process_refund(event, settings):  # dispatched via _HANDLERS
 		).format(amount, (charge.get("currency") or "").upper(), charge.get("id")),
 	)
 	return {"status_label": "Processed", "reference_doctype": "Payment Entry", "reference_name": pe}
+
+
+def sweep_pending():
+	"""Scheduler: retry webhook events that failed processing (dropped/erroring deliveries)."""
+	MAX_RETRIES = 5
+	# Bounded batch per hourly run so a large backlog can't hold a single scheduler tick
+	# open indefinitely; any leftover Failed rows are picked up on the next sweep and
+	# retry_count still caps total attempts, so nothing is dropped. Sites that need larger
+	# batches can raise this via the stripe_webhook_sweep_batch_size site config key.
+	try:
+		batch_size = cint(frappe.conf.get("stripe_webhook_sweep_batch_size")) or 50
+		rows = frappe.get_all(
+			"Stripe Webhook Log",
+			filters={"status": "Failed", "retry_count": ("<", MAX_RETRIES)},
+			fields=["name", "stripe_settings", "payload", "retry_count"],
+			limit=batch_size,
+		)
+	except Exception:
+		# Never let a scheduled task raise: log and bail, the next hourly run retries.
+		frappe.log_error(frappe.get_traceback(), "Stripe webhook sweep could not load pending events")
+		return
+
+	# Reuse one Settings doc per account across rows instead of reloading it each iteration.
+	settings_cache = {}
+	# Collect outcomes and flush them as two bulk UPDATEs after the loop, rather than
+	# one set_value per row (N separate UPDATE queries).
+	failed = []
+	processed = {}
+	for row in rows:
+		# Isolate each row in a savepoint so a failing retry rolls back only its own
+		# partial writes, leaving rows already processed in this batch intact. The
+		# scheduler commits the whole batch when the job finishes — no manual commit.
+		frappe.db.savepoint("stripe_webhook_sweep_row")
+		try:
+			event = frappe.parse_json(row.payload)
+			settings = _sweep_settings(row.stripe_settings, settings_cache)
+			status_label = (route_event(event, settings) or {}).get("status_label", "Processed")
+		except Exception:
+			frappe.db.rollback(save_point="stripe_webhook_sweep_row")
+			frappe.log_error(frappe.get_traceback(), "Stripe webhook sweep failed")
+			status_label = "Failed"
+
+		# Count the attempt whether the handler threw OR returned Failed, so a
+		# permanently-failing event ages out of the sweep instead of looping forever.
+		if status_label == "Failed":
+			failed.append(row.name)
+		else:
+			processed.setdefault(status_label, []).append(row.name)
+
+	_apply_sweep_status(failed, processed)
+
+
+def _sweep_settings(name, cache):
+	"""Load each Stripe Settings account at most once per sweep run."""
+	if not name:
+		return None
+	if name not in cache:
+		cache[name] = frappe.get_doc("Stripe Settings", name)
+	return cache[name]
+
+
+def _apply_sweep_status(failed, processed):
+	"""Persist sweep outcomes as bulk UPDATEs instead of one write per row.
+
+	`failed` -> single UPDATE that sets status=Failed and increments retry_count;
+	`processed` is {status_label: [names]} -> one UPDATE per distinct label.
+	"""
+	if failed:
+		frappe.db.sql(
+			"""UPDATE `tabStripe Webhook Log`
+			SET status = 'Failed', retry_count = retry_count + 1
+			WHERE name IN %(names)s""",
+			{"names": tuple(failed)},
+		)
+	for status_label, names in processed.items():
+		frappe.db.sql(
+			"UPDATE `tabStripe Webhook Log` SET status = %(status)s WHERE name IN %(names)s",
+			{"status": status_label, "names": tuple(names)},
+		)
 
 
 _HANDLERS = {
