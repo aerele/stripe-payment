@@ -6,5 +6,5 @@
 from stripe_payment.install import after_install
 
 
-def execute():
+def execute():  # Frappe patch entry point, run via patches.txt on migrate
 	after_install()

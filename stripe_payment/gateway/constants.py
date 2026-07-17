@@ -36,6 +36,7 @@ STRIPE_CUSTOM_FIELDS = {
 			"read_only": 1,
 			"no_copy": 1,
 			"print_hide": 1,
+			"search_index": 1,
 			"insert_after": "default_currency",
 			"module": "Stripe",
 		}
@@ -48,6 +49,7 @@ STRIPE_CUSTOM_FIELDS = {
 			"read_only": 1,
 			"no_copy": 1,
 			"print_hide": 1,
+			"search_index": 1,
 			"insert_after": "status",
 			"module": "Stripe",
 		},
@@ -61,5 +63,18 @@ STRIPE_CUSTOM_FIELDS = {
 			"insert_after": "stripe_subscription_id",
 			"module": "Stripe",
 		},
+	],
+	"Payment Entry": [
+		{
+			"fieldname": "stripe_payment_intent",
+			"fieldtype": "Data",
+			"label": "Stripe Payment Intent",
+			"read_only": 1,
+			"no_copy": 1,
+			"print_hide": 1,
+			"search_index": 1,
+			"insert_after": "reference_no",
+			"module": "Stripe",
+		}
 	],
 }

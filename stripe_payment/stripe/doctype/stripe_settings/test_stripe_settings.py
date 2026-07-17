@@ -1,7 +1,63 @@
 # Copyright (c) 2018, Frappe Technologies and Contributors
 # License: MIT. See LICENSE
-import unittest
+#
+# Unit tests for the Stripe Settings controller (validation + webhook helpers).
+
+from unittest.mock import patch
+
+import frappe
+from frappe.tests.utils import FrappeTestCase
+
+from stripe_payment.gateway.webhooks import WEBHOOK_SECRET_CACHE_KEY
+from stripe_payment.stripe.doctype.stripe_settings.stripe_settings import (
+	clear_webhook_secret_cache,
+)
 
 
-class TestStripeSettings(unittest.TestCase):
-	pass
+class TestStripeSettings(FrappeTestCase):
+	def test_validate_transaction_currency_rejects_unsupported(self):
+		settings = frappe.new_doc("Stripe Settings")
+		settings.supported_currencies = ["USD", "INR"]
+		with self.assertRaises(frappe.ValidationError):
+			settings.validate_transaction_currency("JPY")
+
+	def test_validate_transaction_currency_accepts_supported(self):
+		settings = frappe.new_doc("Stripe Settings")
+		settings.supported_currencies = ["USD"]
+		# Supported currency must not raise.
+		settings.validate_transaction_currency("USD")
+
+	def test_validate_minimum_transaction_amount_enforced(self):
+		settings = frappe.new_doc("Stripe Settings")
+		settings.currency_wise_minimum_charge_amount = {"USD": 5.0}
+		with self.assertRaises(frappe.ValidationError):
+			settings.validate_minimum_transaction_amount("USD", 1.0)
+		# At/above the floor is fine, and unknown currencies are unconstrained.
+		settings.validate_minimum_transaction_amount("USD", 5.0)
+		settings.validate_minimum_transaction_amount("EUR", 0.1)
+
+	def test_set_webhook_endpoint_writes_when_changed(self):
+		settings = frappe.new_doc("Stripe Settings")
+		settings.webhook_endpoint = None
+		with patch.object(settings, "db_set") as db_set:
+			settings.set_webhook_endpoint()
+		db_set.assert_called_once()
+		fieldname, value = db_set.call_args[0][0], db_set.call_args[0][1]
+		self.assertEqual(fieldname, "webhook_endpoint")
+		self.assertIn("stripe_payment.stripe.doctype.stripe_settings.webhooks", value)
+
+	def test_set_webhook_endpoint_noop_when_unchanged(self):
+		from frappe.utils import get_url
+
+		settings = frappe.new_doc("Stripe Settings")
+		settings.webhook_endpoint = get_url(
+			"/api/method/stripe_payment.stripe.doctype.stripe_settings.webhooks"
+		)
+		with patch.object(settings, "db_set") as db_set:
+			settings.set_webhook_endpoint()
+		db_set.assert_not_called()
+
+	def test_clear_webhook_secret_cache(self):
+		frappe.cache().set_value(WEBHOOK_SECRET_CACHE_KEY, [("GW", "whsec_test")])
+		clear_webhook_secret_cache()
+		self.assertIsNone(frappe.cache().get_value(WEBHOOK_SECRET_CACHE_KEY))

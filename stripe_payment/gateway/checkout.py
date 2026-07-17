@@ -24,6 +24,7 @@ from stripe_payment.gateway.subscriptions import (
 	apply_charge_now_defer_first_cycle,
 	find_erpnext_subscription,
 	get_subscription_line_items,
+	get_subscription_plan_details,
 	is_charge_now_defer_first_cycle,
 )
 
@@ -35,6 +36,7 @@ def get_payment_url(settings, **kwargs):
 		return create_checkout_session(settings, kwargs)
 	if (settings.checkout_mode or "Hosted Checkout") == "Hosted Checkout":
 		return create_checkout_session(settings, kwargs)
+	# Embedded Elements: render the on-site card form (PaymentElement).
 	return get_url(f"./stripe_checkout?{urlencode(kwargs)}")
 
 
@@ -83,6 +85,8 @@ def create_checkout_session(settings, data):
 		}
 		if customer_id:
 			session_params["customer"] = customer_id
+			# Stripe renders its own opt-in checkbox; card saved only if the buyer ticks it.
+			session_params["saved_payment_method_options"] = {"payment_method_save": "enabled"}
 		session = client.checkout.sessions.create(session_params)
 
 	integration_request.db_set("output", session.id, update_modified=False)
@@ -92,17 +96,12 @@ def create_checkout_session(settings, data):
 def _create_subscription_checkout(settings, client, data, customer_id, metadata, success_url):
 	"""Hosted Checkout in subscription mode."""
 	dt, dn = data.get("reference_doctype"), data.get("reference_docname")
-	line_items = get_subscription_line_items(dt, dn)
+	# One fetch of the plan rows, reused for both the Stripe line items and plan names.
+	details = get_subscription_plan_details(dt, dn)
+	line_items = get_subscription_line_items(dt, dn, details=details)
 
 	party = get_party_for_reference(data)
-	plan_names = [
-		row.plan
-		for row in frappe.get_all(
-			"Subscription Plan Detail",
-			filters={"parent": dn, "parenttype": dt},
-			fields=["plan"],
-		)
-	]
+	plan_names = [row.plan for row in details]
 	sub_metadata = dict(metadata)
 	erpnext_sub = find_erpnext_subscription(party, plan_names)
 	if erpnext_sub:
@@ -137,7 +136,7 @@ def _create_subscription_checkout(settings, client, data, customer_id, metadata,
 def finalize_checkout_session(settings, session_id):
 	"""Confirm a Hosted Checkout session and run on_payment_authorized.
 
-	Idempotent: callable from both the success redirect and a later webhook.
+	Idempotent: callable from both the success redirect and the webhook.
 	"""
 	client = get_stripe_client(settings)
 	session = client.checkout.sessions.retrieve(session_id)
@@ -159,7 +158,8 @@ def finalize_checkout_session(settings, session_id):
 
 	if session.get("payment_status") not in ("paid", "no_payment_required"):
 		if session.get("status") == "complete":
-			# Async method (bank debit): session complete, settlement deferred.
+			# Async method (bank debit): the session is done but settlement is deferred
+			# to payment_intent.succeeded. Surface Pending, not Failed.
 			return {"redirect_to": success_redirect(metadata), "status": "Pending"}
 		return {"redirect_to": "payment-failed", "status": "Failed"}
 
@@ -172,6 +172,8 @@ def finalize_checkout_session(settings, session_id):
 
 			link_stripe_subscription(erpnext_sub, session.get("subscription"), session.get("customer"))
 
+		# Subscription-mode sessions carry no top-level PaymentIntent; stamp the
+		# first invoice's PaymentIntent so the resulting Payment Entry is refundable.
 		sub = client.subscriptions.retrieve(
 			session.get("subscription"), {"expand": ["latest_invoice.payment_intent"]}
 		)
@@ -182,6 +184,7 @@ def finalize_checkout_session(settings, session_id):
 		output_id = session_id
 
 	if not claim_integration_request(settings):
+		# Lost the race to a concurrent webhook/redirect — already settled.
 		return {"redirect_to": success_redirect(metadata), "status": "Completed"}
 
 	settings.data = frappe._dict(
@@ -196,7 +199,11 @@ def finalize_checkout_session(settings, session_id):
 
 
 def checkout_success(session_id, gateway):
-	"""Return landing for Hosted Checkout — verify the session, then redirect."""
+	"""Return landing for Hosted Checkout — verify the session, then redirect.
+
+	The webhook (checkout.session.completed) is the authoritative backstop;
+	finalize_checkout_session is idempotent so running both is safe.
+	"""
 	if not frappe.db.exists("Stripe Settings", gateway):
 		frappe.local.response["type"] = "redirect"
 		frappe.local.response["location"] = "/payment-failed"
@@ -205,9 +212,8 @@ def checkout_success(session_id, gateway):
 	result = {}
 	try:
 		settings = frappe.get_doc("Stripe Settings", gateway)
+		# Idempotent settlement; Frappe commits at request end before the redirect.
 		result = finalize_checkout_session(settings, session_id) or {}
-		# Guest return URL must persist settlement before the redirect response.
-		frappe.db.commit()  # nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "Stripe checkout return failed")
 

@@ -30,7 +30,7 @@ expected_keys = (
 )
 
 
-def get_context(context):
+def get_context(context):  # Frappe web-page hook, called by the framework to render the page
 	context.no_cache = 1
 
 	if not (set(expected_keys) - set(list(frappe.form_dict))):
@@ -51,14 +51,14 @@ def get_context(context):
 		raise frappe.Redirect
 
 
-def get_api_key(doc, gateway_controller):
+def get_api_key(doc, gateway_controller):  # called from get_context to build page context
 	publishable_key = frappe.db.get_value("Stripe Settings", gateway_controller, "publishable_key")
 	if cint(frappe.form_dict.get("use_sandbox")):
 		publishable_key = frappe.conf.sandbox_publishable_key
 	return publishable_key
 
 
-def get_header_image(doc, gateway_controller):
+def get_header_image(doc, gateway_controller):  # called from get_context to build page context
 	return frappe.db.get_value("Stripe Settings", gateway_controller, "header_img")
 
 
@@ -80,10 +80,8 @@ def create_payment_intent(
 		data["currency"] = currency
 	gateway_controller = get_gateway_controller(reference_doctype, reference_docname, payment_gateway)
 	settings = frappe.get_doc("Stripe Settings", gateway_controller)
-	result = settings.create_payment_intent_for_checkout(frappe._dict(data))
-	# Guest request must persist the Integration Request / PI before the browser confirms.
-	frappe.db.commit()  # nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit
-	return result
+	# Frappe commits at request end, before the client secret reaches the browser.
+	return settings.create_payment_intent_for_checkout(frappe._dict(data))
 
 
 @frappe.whitelist()
@@ -95,19 +93,19 @@ def save_card(
 ):
 	"""Create a SetupIntent so a card can be saved off-session (authenticated users only)."""
 	guard_payment_reference(reference_doctype, reference_docname)
+	# Authenticated-only endpoint: the caller must own the reference document.
+	frappe.has_permission(reference_doctype, "read", reference_docname, throw=True)
 	assert_reference_payable(reference_doctype, reference_docname)
 	data = json.loads(data)
 	data["reference_doctype"] = reference_doctype
 	data["reference_docname"] = reference_docname
 	gateway_controller = get_gateway_controller(reference_doctype, reference_docname, payment_gateway)
 	settings = frappe.get_doc("Stripe Settings", gateway_controller)
-	result = settings.create_setup_intent_for_card(frappe._dict(data))
-	# Persist SetupIntent linkage before the client confirms the card.
-	frappe.db.commit()  # nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit
-	return result
+	# Frappe commits the SetupIntent linkage at request end, before the client confirms.
+	return settings.create_setup_intent_for_card(frappe._dict(data))
 
 
-@frappe.whitelist(allow_guest=True)  # nosemgrep: frappe-semgrep-rules.rules.security.guest-whitelisted-method
+@frappe.whitelist()
 def set_card_consent(
 	payment_intent: str,
 	client_secret: str | None = None,
@@ -115,17 +113,20 @@ def set_card_consent(
 	reference_docname: str | None = None,
 	payment_gateway: str | None = None,
 ):
-	"""Record save-my-card consent on an unconfirmed checkout PaymentIntent."""
+	"""Record save-my-card consent on an unconfirmed checkout PaymentIntent.
+
+	Authenticated-only: enabling off-session card reuse needs a user account to
+	associate the saved card with, so a guest cannot opt a checkout into it.
+	"""
 	guard_payment_reference(reference_doctype, reference_docname)
+	frappe.has_permission(reference_doctype, "read", reference_docname, throw=True)
 	assert_reference_payable(reference_doctype, reference_docname)
 	gateway_controller = get_gateway_controller(reference_doctype, reference_docname, payment_gateway)
 	settings = frappe.get_doc("Stripe Settings", gateway_controller)
-	result = settings.enable_setup_future_usage(
+	# Frappe commits setup_future_usage at request end, before the browser confirms payment.
+	return settings.enable_setup_future_usage(
 		payment_intent, client_secret, reference_doctype, reference_docname
 	)
-	# Persist setup_future_usage before the browser confirms payment.
-	frappe.db.commit()  # nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit
-	return result
 
 
 @frappe.whitelist(allow_guest=True)  # nosemgrep: frappe-semgrep-rules.rules.security.guest-whitelisted-method
@@ -138,6 +139,10 @@ def make_payment(
 	stripe_token_id: str | None = None,
 ):
 	guard_payment_reference(reference_doctype, reference_docname)
+	# Authenticated callers must own the reference; guests are validated for
+	# existence/payability by the guards (Payment Request grants them no read perm).
+	if frappe.session.user != "Guest":
+		frappe.has_permission(reference_doctype, "read", reference_docname, throw=True)
 	assert_reference_payable(reference_doctype, reference_docname)
 	data = json.loads(data)
 	data["reference_doctype"] = reference_doctype
@@ -159,8 +164,7 @@ def make_payment(
 	else:
 		data = frappe.get_doc("Stripe Settings", gateway_controller).create_request(data)
 
-	# Guest request must persist settlement before the redirect response is sent.
-	frappe.db.commit()  # nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit
+	# Frappe commits settlement at request end, before the redirect response is sent.
 	return data
 
 

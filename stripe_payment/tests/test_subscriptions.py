@@ -25,7 +25,10 @@ class TestStripeSubscriptions(FrappeTestCase):
 				"stripe_payment.gateway.subscriptions.get_subscription_plan_details",
 				return_value=[frappe._dict(plan="PLAN-1", qty=2)],
 			),
-			patch("stripe_payment.gateway.subscriptions.frappe.db.get_value", return_value=None),
+			patch(
+				"stripe_payment.gateway.subscriptions.frappe.get_all",
+				return_value=[["PLAN-1", None]],
+			),
 		):
 			with self.assertRaises(frappe.ValidationError):
 				get_subscription_line_items("Payment Request", "PR-1")
@@ -36,7 +39,10 @@ class TestStripeSubscriptions(FrappeTestCase):
 				"stripe_payment.gateway.subscriptions.get_subscription_plan_details",
 				return_value=[frappe._dict(plan="PLAN-1", qty=2)],
 			),
-			patch("stripe_payment.gateway.subscriptions.frappe.db.get_value", return_value="price_123"),
+			patch(
+				"stripe_payment.gateway.subscriptions.frappe.get_all",
+				return_value=[["PLAN-1", "price_123"]],
+			),
 		):
 			items = get_subscription_line_items("Payment Request", "PR-1")
 		self.assertEqual(items, [{"price": "price_123", "quantity": 2}])

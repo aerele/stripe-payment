@@ -11,10 +11,18 @@ from stripe_payment.gateway.constants import STRIPE_CUSTOM_FIELDS
 
 
 def after_install():
-	if "erpnext" not in frappe.get_installed_apps():
-		return
-	click.secho("* Installing Stripe custom fields")
-	create_custom_fields(STRIPE_CUSTOM_FIELDS)
+	# Never let install/migrate abort mid-way and leave the site inconsistent.
+	try:
+		if "erpnext" not in frappe.get_installed_apps():
+			return
+		click.secho("* Installing Stripe custom fields")
+		create_custom_fields(STRIPE_CUSTOM_FIELDS)
+		# Reconciliation looks up Sales Invoices by their subscription each webhook /
+		# sweep; index the column so that lookup stays O(log n) as volume grows.
+		if frappe.db.has_column("Sales Invoice", "subscription"):
+			frappe.db.add_index("Sales Invoice", ["subscription", "docstatus"])
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "Stripe after_install failed")
 
 
 def before_uninstall():

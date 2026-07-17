@@ -1,45 +1,11 @@
 # Copyright (c) Frappe Technologies Pvt. Ltd. and contributors
 # License: MIT. See LICENSE
-#
-# Public Stripe service API. Shared primitives, Hosted Checkout, customers,
-# card-saving, PaymentIntent entry points, and subscriptions.
 
-from stripe_payment.gateway.checkout import (
-	checkout_success,
-	create_checkout_session,
-	finalize_checkout_session,
-	get_payment_url,
-)
-from stripe_payment.gateway.client import (
-	from_minor_units,
-	get_stripe_client,
-	idempotency_key,
-	to_minor_units,
-)
-from stripe_payment.gateway.constants import STRIPE_API_VERSION, ZERO_DECIMAL_CURRENCIES
-from stripe_payment.gateway.customers import (
-	get_or_create_customer,
-	get_party_for_reference,
-	resolve_stripe_customer,
-)
-from stripe_payment.gateway.payment_intents import (
-	claim_integration_request,
-	create_payment_intent_for_checkout,
-	create_request,
-	create_setup_intent_for_card,
-	enable_setup_future_usage,
-	finalize_payment_intent,
-)
-from stripe_payment.gateway.references import (
-	assert_reference_payable,
-	get_stripe_metadata,
-	is_subscription_reference,
-	success_redirect,
-)
-from stripe_payment.gateway.subscriptions import (
-	create_stripe_subscription,
-	find_erpnext_subscription,
-	get_subscription_line_items,
-	link_stripe_subscription,
-	sync_stripe_price,
-)
+"""Stripe service package: shared primitives, Hosted Checkout, customers,
+card-saving, PaymentIntents, subscriptions, webhooks, and reconciliation.
+
+Pull in the specific submodule you need — for example the ``checkout`` module,
+or ``handle_event`` from the ``webhooks`` submodule. This package deliberately
+re-exports nothing, so there is no barrel to keep in sync and no eager
+cross-module load when the package is first imported.
+"""
