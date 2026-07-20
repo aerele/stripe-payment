@@ -185,30 +185,25 @@ def apply_charge_now_defer_first_cycle(
 	return params
 
 
-def apply_charge_now_defer_first_cycle_subscription(
-	create_args,
-	client,
-	*,
-	customer_id,
-	amount,
-	currency,
-	reference_doctype,
-	reference_docname,
-	description=None,
-):
+def apply_charge_now_defer_first_cycle_subscription(create_args, client, charge):
 	"""Mutate Subscription.create args for Charge Now + Defer First Cycle.
 
 	Pending invoice item on the customer is pulled into the first invoice (the
 	trial start invoice) so the customer pays immediately while recurring items
 	remain $0 until trial_end.
+
+	``charge`` is a dict with: customer_id, amount, currency, reference_doctype,
+	reference_docname, description (optional).
 	"""
-	create_args["trial_end"] = get_first_cycle_trial_end(reference_doctype, reference_docname)
+	create_args["trial_end"] = get_first_cycle_trial_end(
+		charge["reference_doctype"], charge["reference_docname"]
+	)
 	client.invoice_items.create(
 		{
-			"customer": customer_id,
-			"amount": to_minor_units(amount, currency),
-			"currency": (currency or "").lower(),
-			"description": description or _("Subscription charge (first cycle)"),
+			"customer": charge["customer_id"],
+			"amount": to_minor_units(charge["amount"], charge["currency"]),
+			"currency": (charge["currency"] or "").lower(),
+			"description": charge.get("description") or _("Subscription charge (first cycle)"),
 		}
 	)
 	return create_args
@@ -289,12 +284,14 @@ def create_subscription_on_stripe(stripe_settings):
 			apply_charge_now_defer_first_cycle_subscription(
 				create_args,
 				client,
-				customer_id=customer_id,
-				amount=data.get("amount") or pr.grand_total,
-				currency=data.get("currency") or pr.currency,
-				reference_doctype="Payment Request",
-				reference_docname=pr.name,
-				description=data.get("description") or pr.subject,
+				{
+					"customer_id": customer_id,
+					"amount": data.get("amount") or pr.grand_total,
+					"currency": data.get("currency") or pr.currency,
+					"reference_doctype": "Payment Request",
+					"reference_docname": pr.name,
+					"description": data.get("description") or pr.subject,
+				},
 			)
 
 		subscription = client.subscriptions.create(
@@ -333,7 +330,12 @@ def create_subscription_on_stripe(stripe_settings):
 
 
 def sync_stripe_price(doc, method=None):
-	"""doc_event on Subscription Plan (erpnext) — owned by the payments app."""
+	"""doc_event on Subscription Plan on_update — syncs the plan's Stripe price.
+
+	Runs on on_update (not validate) so a Stripe outage never blocks a plan
+	save. Errors are logged + surfaced as a non-blocking message; the doc is
+	already persisted by the time this runs, so writes use db_set.
+	"""
 	if doc.price_determination not in ("Fixed Rate", "Monthly Rate", "Based On Price List"):
 		return
 	if not doc.payment_gateway:
@@ -404,7 +406,7 @@ def sync_stripe_price(doc, method=None):
 				)
 			},
 		)
-		doc.product_price_id = price.id  # persists: we run on validate
+		doc.db_set("product_price_id", price.id)  # on_update: persist post-save
 
 		if old_price_id:
 			# Archive the superseded price only now that the new one is live + persisted.

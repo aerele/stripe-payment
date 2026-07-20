@@ -164,13 +164,22 @@ class StripeSettings(GatewayControllerMixin, Document):
 			controller=self.gateway_name,
 		)
 		call_hook_method("payment_gateway_enabled", gateway="Stripe-" + self.gateway_name)
-		if not self.flags.ignore_mandatory:
-			self.validate_stripe_credentails()
 		self.set_webhook_endpoint()
 		clear_webhook_secret_cache()
+		clear_api_key_cache()
+
+	@frappe.whitelist()
+	def test_connection(self):
+		"""Verify credentials with a live Stripe call.
+
+		Issued on-demand from the 'Test Connection' desk button so a slow /
+		unreachable Stripe API degrades a click, not every save.
+		"""
+		self.validate_stripe_credentails()
 
 	def on_trash(self):
 		clear_webhook_secret_cache()
+		clear_api_key_cache()
 
 	def set_webhook_endpoint(self):
 		"""Show the admin which URL to register as a Stripe webhook endpoint."""
@@ -267,30 +276,17 @@ class StripeSettings(GatewayControllerMixin, Document):
 		return None
 
 	def settle_payment_request(self, pr):
-		"""Mark a submitted Payment Request paid and create its Payment Entry."""
-		if pr.docstatus != 1 or pr.status == "Paid":
-			return
-		if pr.payment_channel == "Phone":
-			pr.db_set({"status": "Paid", "outstanding_amount": 0})
-			return
+		"""Mark a submitted Payment Request paid and create its Payment Entry.
 
-		from payment_core.utils import erpnext_app_import_guard
+		Implementation lives in gateway/payment_intents.py so it's unit-testable
+		without a full StripeSettings document.
+		"""
+		return payment_intents.settle_payment_request(self, pr)
 
-		with erpnext_app_import_guard():
-			from erpnext.accounts.doctype.payment_request.payment_request import (
-				get_existing_payment_entry,
-			)
+	def refund_intent(self, payment_intent, amount=None):
+		from stripe_payment.gateway import refunds
 
-		if pr.reference_name and get_existing_payment_entry(pr.reference_name):
-			return
-
-		# Guest checkout cannot read/write Sales Invoice / PE; elevate for settlement only.
-		original_user = frappe.session.user
-		try:
-			frappe.set_user("Administrator")  # nosemgrep
-			pr.set_as_paid()
-		finally:
-			frappe.set_user(original_user)  # nosemgrep
+		return refunds.refund_intent(self, payment_intent, amount)
 
 	def finalize_request(self):
 		redirect_to = self.data.get("redirect_to") or None
@@ -332,6 +328,12 @@ def clear_webhook_secret_cache():
 	from stripe_payment.gateway.webhooks import clear_cache
 
 	clear_cache()
+
+
+def clear_api_key_cache():
+	from stripe_payment.gateway.client import clear_api_key_cache as _clear
+
+	_clear()
 
 
 @frappe.whitelist(allow_guest=True)  # nosemgrep: frappe-semgrep-rules.rules.security.guest-whitelisted-method

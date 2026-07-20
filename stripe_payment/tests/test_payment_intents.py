@@ -12,6 +12,7 @@ from stripe_payment.gateway.payment_intents import (
 	assert_intent_matches_reference,
 	claim_integration_request,
 	finalize_payment_intent,
+	settle_payment_request,
 )
 from stripe_payment.gateway.references import assert_reference_payable
 
@@ -113,3 +114,44 @@ class TestPaymentIntents(FrappeTestCase):
 		):
 			meta.return_value.has_field.return_value = True
 			assert_reference_payable("Payment Request", "PR-OPEN")
+
+	def test_settle_payment_request_skips_already_paid(self):
+		"""I28: extraction preserved the early-return guards."""
+		settings = MagicMock(name="SS")
+		settings.name = "GW-1"
+		pr = MagicMock(name="PR")
+		pr.docstatus = 1
+		pr.status = "Paid"
+		with patch("stripe_payment.gateway.payment_intents.frappe.db.set_value") as sv:
+			settle_payment_request(settings, pr)
+		pr.set_as_paid.assert_not_called()
+		sv.assert_not_called()
+
+	def test_settle_payment_request_stamps_intent_and_settings(self):
+		"""I28: stamps both stripe_payment_intent and stripe_settings on the PE."""
+		settings = MagicMock(name="SS")
+		settings.name = "GW-1"
+		settings.integration_request.output = "pi_stamp"
+		pr = MagicMock(name="PR")
+		pr.docstatus = 1
+		pr.status = "Requested"
+		pr.payment_channel = "Stripe"
+		pr.reference_name = "SI-1"
+		pe = MagicMock(name="PE")
+		pe.name = "PE-1"
+		pe.meta.has_field.return_value = True
+		pr.set_as_paid.return_value = pe
+
+		with (
+			patch("stripe_payment.gateway.payment_intents.frappe.set_user"),
+			patch("stripe_payment.gateway.payment_intents.frappe.db.set_value") as sv,
+		):
+			settle_payment_request(settings, pr)
+		# Both fields stamped in a single set_value call.
+		_, kwargs = sv.call_args
+		args = sv.call_args[0]
+		self.assertEqual(args[0], "Payment Entry")
+		self.assertEqual(args[1], "PE-1")
+		self.assertEqual(args[2]["stripe_payment_intent"], "pi_stamp")
+		self.assertEqual(args[2]["stripe_settings"], "GW-1")
+		self.assertFalse(kwargs.get("update_modified", True))

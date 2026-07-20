@@ -209,6 +209,9 @@ def _find_period_sales_invoice(erpnext_sub, invoice):  # helper used by the reco
 def _generate_and_find_sales_invoice(erpnext_sub, invoice):  # helper used by the reconcilers above
 	"""Stripe billed before ERPNext's scheduler — generate the period SI, then re-find."""
 	_, end = _invoice_period(invoice)
+	# A real Document is required here (not db.get_value) because .process() is a
+	# lifecycle method that fires Subscription's validate/save chain to generate
+	# the period's Sales Invoice — field-only reads cannot invoke it.
 	sub_doc = frappe.get_doc("Subscription", erpnext_sub)
 	# No commit here: keep SI generation in the webhook's transaction so a later
 	# Payment Entry failure rolls back the SI too. Let a generation failure propagate:

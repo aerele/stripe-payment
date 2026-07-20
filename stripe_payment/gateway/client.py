@@ -10,6 +10,12 @@ from frappe.utils import flt
 
 from stripe_payment.gateway.constants import STRIPE_API_VERSION, ZERO_DECIMAL_CURRENCIES
 
+# Per-request cache for the decrypted API key, keyed by Stripe Settings name.
+# Avoids a DB read + AES decrypt on every get_stripe_client call within a
+# single request/job (notably the hourly sweep, which builds one client per
+# Settings doc per API call). Invalidated by StripeSettings.on_update/on_trash.
+_API_KEY_CACHE = "stripe_api_keys"
+
 
 def get_stripe_client(stripe_settings):
 	"""Return a Stripe client bound to this Stripe Settings doc.
@@ -24,14 +30,27 @@ def get_stripe_client(stripe_settings):
 	"""
 	import stripe
 
-	if isinstance(stripe_settings, str):
-		stripe_settings = frappe.get_doc("Stripe Settings", stripe_settings)
+	name = stripe_settings if isinstance(stripe_settings, str) else stripe_settings.name
+
+	api_key = frappe.cache().hget(_API_KEY_CACHE, name)
+	if api_key is None:
+		# Read just the decrypted secret_key from the password store rather than
+		# loading the whole Settings doc with get_doc for a single field.
+		from frappe.utils.password import get_decrypted_password
+
+		api_key = get_decrypted_password("Stripe Settings", name, "secret_key", raise_exception=False)
+		frappe.cache().hset(_API_KEY_CACHE, name, api_key)
 
 	return stripe.StripeClient(
-		stripe_settings.get_password("secret_key", raise_exception=False),
+		api_key,
 		stripe_version=STRIPE_API_VERSION,
 		http_client=stripe.http_client.RequestsClient(),
 	)
+
+
+def clear_api_key_cache():
+	"""Drop the cached Stripe API keys (call on Stripe Settings save/trash)."""
+	frappe.cache().delete_key(_API_KEY_CACHE)
 
 
 def to_minor_units(amount, currency):

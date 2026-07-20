@@ -4,3 +4,4 @@
 stripe_payment.patches.reassign_stripe_modules
 stripe_payment.patches.install_customer_stripe_id
 stripe_payment.patches.install_subscription_stripe_fields
+stripe_payment.patches.install_payment_entry_stripe_intent

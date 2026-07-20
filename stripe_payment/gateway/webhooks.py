@@ -41,69 +41,66 @@ def handle_event(event, settings):
 
 	A prior *Failed* attempt is allowed to reprocess (its log row is reused); any
 	other prior status is a genuine duplicate and is skipped.
+
+	The caller (the webhooks endpoint) is responsible for elevation: it has
+	already set_user("Administrator") after verifying the signature, and will
+	restore the original user in its own finally block.
 	"""
-	# Signature-verified; elevate so handlers can settle docs (endpoint is allow_guest),
-	# then always restore the original user so later requests don't run as Administrator.
-	original_user = frappe.session.user
-	try:
-		frappe.set_user("Administrator")  # nosemgrep
-		event_id = event["id"]
-		prior = frappe.db.get_value(
-			"Stripe Webhook Log", {"stripe_event_id": event_id}, ["name", "status"], as_dict=True
+	event_id = event["id"]
+	prior = frappe.db.get_value(
+		"Stripe Webhook Log", {"stripe_event_id": event_id}, ["name", "status"], as_dict=True
+	)
+	if prior and prior.status != "Failed":
+		return {"status": "duplicate"}
+
+	if prior:
+		log = frappe.get_doc("Stripe Webhook Log", prior.name)
+	else:
+		obj = event["data"]["object"]
+		log = frappe.get_doc(
+			{
+				"doctype": "Stripe Webhook Log",
+				"stripe_event_id": event_id,
+				"event_type": event["type"],
+				"stripe_object_id": obj.get("id"),
+				"status": "Received",
+				"stripe_settings": settings.name if settings else None,
+				"payload": frappe.as_json(event),
+			}
 		)
-		if prior and prior.status != "Failed":
+		try:
+			# Caller has elevated to Administrator, so the insert is already
+			# privileged — no ignore_permissions needed.
+			log.insert()
+		except frappe.exceptions.DuplicateEntryError:
+			# Concurrent delivery already inserted it; the unique stripe_event_id
+			# index is the real dedupe guard, so no early commit is needed.
 			return {"status": "duplicate"}
 
-		if prior:
-			log = frappe.get_doc("Stripe Webhook Log", prior.name)
-		else:
-			obj = event["data"]["object"]
-			log = frappe.get_doc(
-				{
-					"doctype": "Stripe Webhook Log",
-					"stripe_event_id": event_id,
-					"event_type": event["type"],
-					"stripe_object_id": obj.get("id"),
-					"status": "Received",
-					"stripe_settings": settings.name if settings else None,
-					"payload": frappe.as_json(event),
-				}
-			)
-			try:
-				# handle_event runs as Administrator (set above), so the insert is
-				# already privileged — no ignore_permissions needed.
-				log.insert()
-			except frappe.exceptions.DuplicateEntryError:
-				# Concurrent delivery already inserted it; the unique stripe_event_id
-				# index is the real dedupe guard, so no early commit is needed.
-				return {"status": "duplicate"}
+	# Run the handler inside a savepoint: a failure rolls back only the handler's
+	# partial writes while keeping the log row, and the request transaction is
+	# committed by Frappe once we return — no manual commit required.
+	frappe.db.savepoint("stripe_webhook_handler")
+	try:
+		# Local import keeps reconciliation (and its erpnext-touching helpers) out
+		# of this module's import path until an event is actually processed.
+		from stripe_payment.gateway import reconciliation
 
-		# Run the handler inside a savepoint: a failure rolls back only the handler's
-		# partial writes while keeping the log row, and the request transaction is
-		# committed by Frappe once we return — no manual commit required.
-		frappe.db.savepoint("stripe_webhook_handler")
-		try:
-			# Local import keeps reconciliation (and its erpnext-touching helpers) out
-			# of this module's import path until an event is actually processed.
-			from stripe_payment.gateway import reconciliation
+		result = reconciliation.route_event(event, settings) or {}
+		log.db_set("status", result.get("status_label", "Processed"), update_modified=False)
+		if result.get("reference_doctype"):
+			log.db_set("reference_doctype", result.get("reference_doctype"), update_modified=False)
+			log.db_set("reference_name", result.get("reference_name"), update_modified=False)
+	except Exception:
+		frappe.db.rollback(save_point="stripe_webhook_handler")
+		log.db_set("status", "Failed", update_modified=False)
+		log.db_set("error", frappe.get_traceback(), update_modified=False)
+		frappe.log_error(frappe.get_traceback(), "Stripe webhook processing failed")
+		# Transient failure — ask Stripe to retry; the dedupe above reprocesses the Failed row.
+		frappe.local.response["http_status_code"] = 500
+		return {"status": "error"}
 
-			result = reconciliation.route_event(event, settings) or {}
-			log.db_set("status", result.get("status_label", "Processed"), update_modified=False)
-			if result.get("reference_doctype"):
-				log.db_set("reference_doctype", result.get("reference_doctype"), update_modified=False)
-				log.db_set("reference_name", result.get("reference_name"), update_modified=False)
-		except Exception:
-			frappe.db.rollback(save_point="stripe_webhook_handler")
-			log.db_set("status", "Failed", update_modified=False)
-			log.db_set("error", frappe.get_traceback(), update_modified=False)
-			frappe.log_error(frappe.get_traceback(), "Stripe webhook processing failed")
-			# Transient failure — ask Stripe to retry; the dedupe above reprocesses the Failed row.
-			frappe.local.response["http_status_code"] = 500
-			return {"status": "error"}
-
-		return {"status": "ok"}
-	finally:
-		frappe.set_user(original_user)  # nosemgrep
+	return {"status": "ok"}
 
 
 def get_webhook_secrets():

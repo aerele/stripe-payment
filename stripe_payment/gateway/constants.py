@@ -75,6 +75,20 @@ STRIPE_CUSTOM_FIELDS = {
 			"search_index": 1,
 			"insert_after": "reference_no",
 			"module": "Stripe",
-		}
+		},
+		{
+			"fieldname": "stripe_settings",
+			"fieldtype": "Data",
+			"label": "Stripe Settings",
+			# Owning gateway controller for this Stripe-originated payment; lets
+			# refunds resolve the account from a single local read instead of
+			# probing every Stripe Settings doc over the network.
+			"read_only": 1,
+			"no_copy": 1,
+			"print_hide": 1,
+			"search_index": 1,
+			"insert_after": "stripe_payment_intent",
+			"module": "Stripe",
+		},
 	],
 }
