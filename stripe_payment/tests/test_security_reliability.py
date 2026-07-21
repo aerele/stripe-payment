@@ -14,11 +14,10 @@ from stripe_payment.gateway.payment_intents import (
 	enable_setup_future_usage,
 	finalize_payment_intent,
 )
-from stripe_payment.gateway.refunds import refund_payment_entry
 
 
 class TestSecurityReliability(FrappeTestCase):
-	"""Regression coverage for amount/ownership/claim/consent/refund guards."""
+	"""Regression coverage for amount/ownership/claim/consent guards."""
 
 	# --- PaymentIntent ownership ---
 
@@ -129,26 +128,6 @@ class TestSecurityReliability(FrappeTestCase):
 		with patch("stripe_payment.gateway.payment_intents.get_stripe_client", return_value=client):
 			with self.assertRaises(frappe.PermissionError):
 				enable_setup_future_usage(settings, "pi_1", "forged_secret", "Payment Request", "PR-1")
-
-	# --- Refund permissions ---
-
-	def test_refund_requires_write_permission(self):
-		"""Calls frappe.has_permission with write on the Payment Entry name and propagates PermissionError before any Stripe API call."""
-		with patch(
-			"stripe_payment.gateway.refunds.frappe.has_permission",
-			side_effect=frappe.PermissionError,
-		):
-			with self.assertRaises(frappe.PermissionError):
-				refund_payment_entry("PE-1")
-
-	def test_refund_requires_linked_payment_intent(self):
-		"""Reads the stripe_payment_intent column from the Payment Entry and throws ValidationError when it is empty."""
-		with (
-			patch("stripe_payment.gateway.refunds.frappe.has_permission"),
-			patch("stripe_payment.gateway.refunds.frappe.db.get_value", return_value=None),
-		):
-			with self.assertRaises(frappe.ValidationError):
-				refund_payment_entry("PE-1")
 
 	# --- Reference amount authority (payment_core) ---
 

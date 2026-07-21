@@ -30,8 +30,6 @@ scheduler_events = {
 	"hourly": ["stripe_payment.gateway.reconciliation.sweep_pending"],
 }
 
-doctype_js = {"Payment Entry": "public/js/payment_entry_stripe.js"}
-
 add_to_apps_screen = [
 	{
 		"name": "stripe_payment",

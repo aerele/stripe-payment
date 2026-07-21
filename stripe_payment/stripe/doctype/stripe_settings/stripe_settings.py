@@ -283,11 +283,6 @@ class StripeSettings(GatewayControllerMixin, Document):
 		"""
 		return payment_intents.settle_payment_request(self, pr)
 
-	def refund_intent(self, payment_intent, amount=None):
-		from stripe_payment.gateway import refunds
-
-		return refunds.refund_intent(self, payment_intent, amount)
-
 	def finalize_request(self):
 		redirect_to = self.data.get("redirect_to") or None
 		redirect_message = self.data.get("redirect_message") or None
