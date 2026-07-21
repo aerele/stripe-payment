@@ -12,6 +12,7 @@ from frappe.integrations.utils import create_request_log
 
 from stripe_payment.gateway.client import get_stripe_client, idempotency_key, to_minor_units
 from stripe_payment.gateway.customers import resolve_stripe_customer
+from stripe_payment.gateway.payment_methods import automatic_payment_methods_for
 from stripe_payment.gateway.references import (
 	assert_reference_payable,
 	get_stripe_metadata,
@@ -83,7 +84,7 @@ def create_payment_intent_for_checkout(settings, data):
 		"description": data.get("description"),
 		"receipt_email": data.get("payer_email"),
 		"metadata": get_stripe_metadata(settings, data=data, integration_request=integration_request.name),
-		"automatic_payment_methods": {"enabled": True, "allow_redirects": "never"},
+		"automatic_payment_methods": automatic_payment_methods_for(settings, data.currency),
 	}
 	if customer_id:
 		params["customer"] = customer_id
@@ -140,7 +141,7 @@ def create_payment_intent_on_stripe(settings):
 			"description": settings.data.get("description"),
 			"receipt_email": settings.data.get("payer_email"),
 			"metadata": get_stripe_metadata(settings, integration_request=settings.integration_request.name),
-			"automatic_payment_methods": {"enabled": True, "allow_redirects": "never"},
+			"automatic_payment_methods": automatic_payment_methods_for(settings, settings.data.currency),
 		}
 		if customer_id:
 			params["customer"] = customer_id

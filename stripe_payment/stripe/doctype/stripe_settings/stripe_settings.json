@@ -281,6 +281,12 @@
   },
   {
    "default": "0",
+   "description": "Offer UPI for INR payments (India). Enable UPI in the Stripe Dashboard for your account. Redirects are allowed when UPI is active.",
+   "fieldname": "enable_upi",
+   "fieldtype": "Check",
+   "label": "Enable UPI (India / INR)"
+  },
+  {
    "description": "If enabled, a Subscription Plan's Stripe price is auto-synced from its ERPNext cost on save.",
    "fieldname": "sync_subscription_price",
    "fieldtype": "Check",

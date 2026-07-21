@@ -15,6 +15,7 @@ from payment_core.utils import get_reference_amount, guard_payment_reference
 from stripe_payment.gateway.client import get_stripe_client, to_minor_units
 from stripe_payment.gateway.customers import get_party_for_reference, resolve_stripe_customer
 from stripe_payment.gateway.payment_intents import claim_integration_request
+from stripe_payment.gateway.payment_methods import checkout_payment_method_types
 from stripe_payment.gateway.references import (
 	get_stripe_metadata,
 	is_subscription_reference,
@@ -83,6 +84,10 @@ def create_checkout_session(settings, data):
 			"payment_intent_data": {"metadata": metadata},
 			"metadata": metadata,
 		}
+		# UPI (INR) needs an explicit method list so it shows in Hosted Checkout.
+		method_types = checkout_payment_method_types(settings, data.currency)
+		if method_types:
+			session_params["payment_method_types"] = method_types
 		if customer_id:
 			session_params["customer"] = customer_id
 			# Stripe renders its own opt-in checkbox; card saved only if the buyer ticks it.
