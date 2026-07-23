@@ -229,9 +229,6 @@ class StripeSettings(GatewayControllerMixin, Document):
 	def create_request(self, data):
 		return payment_intents.create_request(self, data)
 
-	def create_payment_intent_for_checkout(self, data):
-		return payment_intents.create_payment_intent_for_checkout(self, data)
-
 	def create_payment_intent_on_stripe(self):
 		return payment_intents.create_payment_intent_on_stripe(self)
 
@@ -249,14 +246,6 @@ class StripeSettings(GatewayControllerMixin, Document):
 
 	def resolve_stripe_customer(self, stripe, data):
 		return customers.resolve_stripe_customer(stripe, data)
-
-	def create_setup_intent_for_card(self, data):
-		return payment_intents.create_setup_intent_for_card(self, data)
-
-	def enable_setup_future_usage(self, payment_intent, client_secret, reference_doctype, reference_docname):
-		return payment_intents.enable_setup_future_usage(
-			self, payment_intent, client_secret, reference_doctype, reference_docname
-		)
 
 	def create_charge_on_stripe(self):
 		# Deprecated Charges API shim; delegates to PaymentIntents (supports save_card).

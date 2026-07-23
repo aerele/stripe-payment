@@ -4,7 +4,7 @@
 # Hosted Checkout: one-off payment + subscription mode, session creation,
 # get_payment_url routing, and the return handler.
 
-from urllib.parse import quote, urlencode
+from urllib.parse import quote
 
 import frappe
 from frappe import _
@@ -21,23 +21,15 @@ from stripe_payment.gateway.references import (
 	success_redirect,
 )
 from stripe_payment.gateway.subscriptions import (
-	apply_charge_now_defer_first_cycle,
 	find_erpnext_subscription,
 	get_subscription_line_items,
 	get_subscription_plan_details,
-	is_charge_now_defer_first_cycle,
 )
 
 
 def get_payment_url(settings, **kwargs):
-	"""Route to Hosted Checkout or on-site stripe_checkout based on settings."""
-	# Subscriptions always use Hosted Checkout (native recurring billing).
-	if is_subscription_reference(kwargs):
-		return create_checkout_session(settings, kwargs)
-	if (settings.checkout_mode or "Hosted Checkout") == "Hosted Checkout":
-		return create_checkout_session(settings, kwargs)
-	# Embedded Elements: render the on-site card form (PaymentElement).
-	return get_url(f"./stripe_checkout?{urlencode(kwargs)}")
+	"""Route to Hosted Checkout (the single supported checkout path)."""
+	return create_checkout_session(settings, kwargs)
 
 
 def create_checkout_session(settings, data):
@@ -118,16 +110,6 @@ def _create_subscription_checkout(settings, client, data, customer_id, metadata,
 		"metadata": sub_metadata,
 		"subscription_data": {"metadata": sub_metadata},
 	}
-	if is_charge_now_defer_first_cycle(settings):
-		# One-time PR amount now + free trial over the first plan interval.
-		apply_charge_now_defer_first_cycle(
-			params,
-			amount=data.amount,
-			currency=data.currency,
-			reference_doctype=dt,
-			reference_docname=dn,
-			description=data.get("description") or data.get("title"),
-		)
 	if customer_id:
 		params["customer"] = customer_id
 	return client.checkout.sessions.create(params)

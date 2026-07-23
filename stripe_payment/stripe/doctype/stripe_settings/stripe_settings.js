@@ -8,6 +8,7 @@ frappe.ui.form.on("Stripe Settings", {
 		frm.add_custom_button(__("Test Connection"), () => {
 			frm.call({
 				method: "test_connection",
+				doc: frm.doc,
 				freeze: true,
 				freeze_message: __("Verifying Stripe credentials..."),
 				callback(r) {

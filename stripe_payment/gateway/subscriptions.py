@@ -7,7 +7,7 @@
 import frappe
 from frappe import _
 from frappe.integrations.utils import create_request_log
-from frappe.utils import add_to_date, cint, get_datetime, now_datetime
+from frappe.utils import cint
 
 from stripe_payment.gateway.client import get_stripe_client, idempotency_key, to_minor_units
 from stripe_payment.gateway.customers import get_or_create_customer
@@ -15,10 +15,7 @@ from stripe_payment.gateway.customers import get_or_create_customer
 INTERVAL_MAP = {"Day": "day", "Week": "week", "Month": "month", "Year": "year"}
 
 # Stripe free trials must end at least ~48 hours after creation.
-_MIN_TRIAL_HOURS = 48
-
 BILL_FROM_CYCLE_ONE = "Bill From Cycle One"
-CHARGE_NOW_DEFER_FIRST = "Charge Now + Defer First Cycle"
 
 
 def get_subscription_plan_details(reference_doctype, reference_docname):
@@ -104,111 +101,6 @@ def link_stripe_subscription(erpnext_subscription, stripe_subscription_id, strip
 		frappe.db.set_value("Subscription", erpnext_subscription, values, update_modified=False)
 
 
-def is_charge_now_defer_first_cycle(settings) -> bool:
-	"""Whether Settings uses the Charge Now + Defer First Cycle billing model."""
-	return (getattr(settings, "subscription_billing_model", None) or "") == CHARGE_NOW_DEFER_FIRST
-
-
-def get_first_cycle_trial_end(reference_doctype, reference_docname) -> int:
-	"""Unix timestamp for the end of the first plan interval (Stripe trial_end).
-
-	Used by Charge Now + Defer First Cycle: the customer pays the Payment Request
-	amount immediately (one-time), while recurring plan prices stay on trial until
-	this timestamp so Stripe does not double-bill the first cycle.
-	"""
-	details = get_subscription_plan_details(reference_doctype, reference_docname)
-	if not details:
-		frappe.throw(_("No subscription plan found on this payment request."))
-
-	plan_name = details[0].plan
-	row = frappe.db.get_value(
-		"Subscription Plan",
-		plan_name,
-		["billing_interval", "billing_interval_count"],
-		as_dict=True,
-	)
-	if not row or not row.billing_interval:
-		frappe.throw(_("Subscription Plan {0} is missing a billing interval.").format(frappe.bold(plan_name)))
-
-	count = cint(row.billing_interval_count) or 1
-	now = now_datetime()
-	interval = row.billing_interval
-	if interval == "Day":
-		end = add_to_date(now, days=count)
-	elif interval == "Week":
-		end = add_to_date(now, days=7 * count)
-	elif interval == "Month":
-		end = add_to_date(now, months=count)
-	elif interval == "Year":
-		end = add_to_date(now, years=count)
-	else:
-		frappe.throw(_("Unsupported billing interval {0} on plan {1}.").format(interval, plan_name))
-
-	# Stripe requires free trials to end at least 48 hours after creation.
-	min_end = add_to_date(now, hours=_MIN_TRIAL_HOURS)
-	if get_datetime(end) < get_datetime(min_end):
-		end = min_end
-
-	return int(get_datetime(end).timestamp())
-
-
-def build_charge_now_line_item(amount, currency, description=None):
-	"""One-time Checkout / invoice line for the immediate Charge Now amount."""
-	return {
-		"price_data": {
-			"currency": (currency or "").lower(),
-			"unit_amount": to_minor_units(amount, currency),
-			"product_data": {
-				"name": description or _("Subscription charge (first cycle)"),
-			},
-		},
-		"quantity": 1,
-	}
-
-
-def apply_charge_now_defer_first_cycle(
-	params, *, amount, currency, reference_doctype, reference_docname, description=None
-):
-	"""Mutate Hosted Checkout session params for Charge Now + Defer First Cycle.
-
-	- Adds a one-time line item for ``amount`` (paid at Checkout).
-	- Sets ``subscription_data.trial_end`` to the end of the first plan interval
-	  so recurring prices are not invoiced until the next cycle.
-	"""
-	line_items = list(params.get("line_items") or [])
-	line_items.append(build_charge_now_line_item(amount, currency, description=description))
-	params["line_items"] = line_items
-
-	sub_data = dict(params.get("subscription_data") or {})
-	sub_data["trial_end"] = get_first_cycle_trial_end(reference_doctype, reference_docname)
-	params["subscription_data"] = sub_data
-	return params
-
-
-def apply_charge_now_defer_first_cycle_subscription(create_args, client, charge):
-	"""Mutate Subscription.create args for Charge Now + Defer First Cycle.
-
-	Pending invoice item on the customer is pulled into the first invoice (the
-	trial start invoice) so the customer pays immediately while recurring items
-	remain $0 until trial_end.
-
-	``charge`` is a dict with: customer_id, amount, currency, reference_doctype,
-	reference_docname, description (optional).
-	"""
-	create_args["trial_end"] = get_first_cycle_trial_end(
-		charge["reference_doctype"], charge["reference_docname"]
-	)
-	client.invoice_items.create(
-		{
-			"customer": charge["customer_id"],
-			"amount": to_minor_units(charge["amount"], charge["currency"]),
-			"currency": (charge["currency"] or "").lower(),
-			"description": charge.get("description") or _("Subscription charge (first cycle)"),
-		}
-	)
-	return create_args
-
-
 def get_stripe_settings_for_gateway(payment_gateway_account):
 	"""Resolve a Payment Gateway Account name to its Stripe Settings doc.
 
@@ -278,21 +170,6 @@ def create_subscription_on_stripe(stripe_settings):
 			"payment_settings": {"save_default_payment_method": "on_subscription"},
 			"expand": ["latest_invoice.payment_intent"],
 		}
-
-		if is_charge_now_defer_first_cycle(stripe_settings):
-			# Charge PR amount now; defer first recurring plan invoice via trial.
-			apply_charge_now_defer_first_cycle_subscription(
-				create_args,
-				client,
-				{
-					"customer_id": customer_id,
-					"amount": data.get("amount") or pr.grand_total,
-					"currency": data.get("currency") or pr.currency,
-					"reference_doctype": "Payment Request",
-					"reference_docname": pr.name,
-					"description": data.get("description") or pr.subject,
-				},
-			)
 
 		subscription = client.subscriptions.create(
 			create_args, {"idempotency_key": idempotency_key("sub", pr.name)}

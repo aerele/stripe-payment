@@ -94,7 +94,7 @@ class TestHostedCheckout(FrappeTestCase):
 		self.assertEqual(result["status"], "Pending")
 		settings.finalize_request.assert_not_called()
 
-	def test_get_payment_url_hosted_vs_embedded(self):
+	def test_get_payment_url_always_routes_to_hosted_checkout(self):
 		from stripe_payment.gateway.checkout import get_payment_url
 
 		settings = MagicMock()
@@ -108,8 +108,3 @@ class TestHostedCheckout(FrappeTestCase):
 			url = get_payment_url(settings, amount=10, currency="USD")
 			self.assertEqual(url, "https://checkout.stripe.com/x")
 			create.assert_called_once()
-
-		settings.checkout_mode = "Embedded Elements"
-		with patch("stripe_payment.gateway.checkout.get_url", side_effect=lambda p: f"http://site{p[1:]}"):
-			url = get_payment_url(settings, amount=10, currency="USD")
-			self.assertIn("stripe_checkout", url)

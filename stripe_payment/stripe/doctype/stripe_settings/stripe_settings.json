@@ -273,11 +273,11 @@
   },
   {
    "default": "Hosted Checkout",
-   "description": "Hosted Checkout redirects to a Stripe-hosted page (SCA/3DS ready). Embedded Elements renders the Payment Element on this site and supports save-my-card consent.",
+   "description": "Hosted Checkout redirects to a Stripe-hosted page (SCA/3DS ready).",
    "fieldname": "checkout_mode",
    "fieldtype": "Select",
    "label": "Checkout Mode",
-   "options": "Hosted Checkout\nEmbedded Elements"
+   "options": "Hosted Checkout"
   },
   {
    "default": "0",
@@ -285,18 +285,6 @@
    "fieldname": "sync_subscription_price",
    "fieldtype": "Check",
    "label": "Sync Subscription Plan Price to Stripe"
-  },
-  {
-   "fieldname": "configuration_cb",
-   "fieldtype": "Column Break"
-  },
-  {
-   "default": "Bill From Cycle One",
-   "description": "Bill From Cycle One: Stripe bills plan price×qty as the first subscription invoice. Charge Now + Defer First Cycle: charge the Payment Request amount immediately (one-time), and start the first recurring plan invoice after one plan interval (free trial).",
-   "fieldname": "subscription_billing_model",
-   "fieldtype": "Select",
-   "label": "Subscription Billing Model",
-   "options": "Bill From Cycle One\nCharge Now + Defer First Cycle"
   },
   {
    "fieldname": "webhooks_section",

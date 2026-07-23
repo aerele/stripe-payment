@@ -4,11 +4,13 @@
 # PaymentIntent create/finalize plus SetupIntent / save-card consent (this feature PR).
 
 import hmac
+import json
 
 import frappe
 import stripe
 from frappe import _
 from frappe.integrations.utils import create_request_log
+from frappe.utils import cint, flt, nowdate
 
 from stripe_payment.gateway.client import get_stripe_client, idempotency_key, to_minor_units
 from stripe_payment.gateway.customers import resolve_stripe_customer
@@ -280,13 +282,7 @@ def finalize_payment_intent(settings, intent, integration_request=None):
 
 
 def settle_payment_request(settings, pr):
-	"""Mark a submitted Payment Request paid and create its Payment Entry.
-
-	Extracted from the StripeSettings controller so it's unit-testable with a
-	plain settings stub + a Payment Request mock, and so the webhook reconciler
-	can call it directly if needed. Stamps the Stripe PaymentIntent and owning
-	Stripe Settings onto the Payment Entry for refund lookups.
-	"""
+	"""Create a Payment Entry for the actual Stripe charge amount, letting ERPNext update PR status and outstanding automatically."""
 	if pr.docstatus != 1 or pr.status == "Paid":
 		return
 	if pr.payment_channel == "Phone":
@@ -296,26 +292,88 @@ def settle_payment_request(settings, pr):
 	from payment_core.utils import erpnext_app_import_guard
 
 	with erpnext_app_import_guard():
+		from erpnext.accounts.doctype.payment_entry.payment_entry import get_payment_entry
 		from erpnext.accounts.doctype.payment_request.payment_request import (
 			get_existing_payment_entry,
 		)
 
+	# Allow a second PE when the reference document still has an outstanding balance.
 	if pr.reference_name and get_existing_payment_entry(pr.reference_name):
-		return
+		# Sales Orders don't have outstanding_amount — only block if the doctype has it and it's zero.
+		if frappe.get_meta(pr.reference_doctype).has_field("outstanding_amount"):
+			si_outstanding = flt(
+				frappe.db.get_value(pr.reference_doctype, pr.reference_name, "outstanding_amount")
+			)
+			if si_outstanding <= 0:
+				return
 
-	# Guest checkout cannot read/write Sales Invoice / PE; elevate for settlement only.
+	# Determine the actual charged amount; default to PR outstanding for full payments.
+	intent_id = getattr(getattr(settings, "integration_request", None), "output", None)
+	charged_amount = _get_charged_amount(settings, intent_id)
+	original_outstanding = flt(pr.outstanding_amount)
+
+	if charged_amount and charged_amount < original_outstanding:
+		pe_amount = charged_amount
+	else:
+		pe_amount = original_outstanding
+
+	# For multi-currency, convert the charged amount to company currency (INR) using
+	# the reference doc's exchange rate, because ERPNext's get_payment_entry treats
+	# party_amount as the party-account currency (company currency for most setups).
+	company_currency = frappe.db.get_value("Company", pr.company, "default_currency")
+	is_multi_currency = (pr.currency or "") != (company_currency or "")
+
+	if is_multi_currency and charged_amount and charged_amount < original_outstanding:
+		ref_conversion_rate = flt(
+			frappe.db.get_value(pr.reference_doctype, pr.reference_name, "conversion_rate")
+		)
+		# Round to the company's currency precision so the PE amount matches what ERPNext books.
+		currency_precision = (
+			frappe.get_cached_value("System Settings", "System Settings", "currency_precision") or 2
+		)
+		pe_amount = flt(charged_amount * ref_conversion_rate, cint(currency_precision))
+		# Cap to the actual outstanding so rounding never over-allocates.
+		if frappe.get_meta(pr.reference_doctype).has_field("outstanding_amount"):
+			ref_outstanding = flt(
+				frappe.db.get_value(pr.reference_doctype, pr.reference_name, "outstanding_amount")
+			)
+			if ref_outstanding > 0:
+				pe_amount = min(pe_amount, ref_outstanding)
+
 	original_user = frappe.session.user
 	try:
 		frappe.set_user("Administrator")  # nosemgrep
-		payment_entry = pr.set_as_paid()
+		payment_entry = get_payment_entry(
+			pr.reference_doctype,
+			pr.reference_name,
+			party_amount=pe_amount,
+			bank_account=pr.payment_account,
+		)
+		payment_entry.reference_no = pr.name
+		payment_entry.reference_date = nowdate()
+		payment_entry.insert(ignore_permissions=True)
+		payment_entry.submit()
 	finally:
 		frappe.set_user(original_user)  # nosemgrep
 
-	# Stamp the PaymentIntent and owning Stripe Settings onto the PE
-	# (both are needed for refunds to resolve the account locally).
-	intent_id = getattr(getattr(settings, "integration_request", None), "output", None)
+	# Stamp the PaymentIntent and owning Stripe Settings onto the PE for refund lookups.
 	if intent_id and payment_entry and payment_entry.meta.has_field("stripe_payment_intent"):
 		updates = {"stripe_payment_intent": intent_id}
 		if payment_entry.meta.has_field("stripe_settings"):
 			updates["stripe_settings"] = settings.name
 		frappe.db.set_value("Payment Entry", payment_entry.name, updates, update_modified=False)
+
+
+def _get_charged_amount(settings, intent_id):
+	"""Return the amount Stripe charged in major units by reading the Integration Request's stored data."""
+	if not intent_id:
+		return 0
+	try:
+		ir_data = json.loads(settings.integration_request.data or "{}")
+	except (AttributeError, TypeError):
+		return 0
+
+	amount = ir_data.get("amount")
+	if amount is None:
+		return 0
+	return flt(amount)
