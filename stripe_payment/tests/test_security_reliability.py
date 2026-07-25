@@ -11,13 +11,12 @@ from frappe.tests.utils import FrappeTestCase
 from stripe_payment.gateway.payment_intents import (
 	assert_intent_matches_reference,
 	claim_integration_request,
-	enable_setup_future_usage,
 	finalize_payment_intent,
 )
 
 
 class TestSecurityReliability(FrappeTestCase):
-	"""Regression coverage for amount/ownership/claim/consent guards."""
+	"""Regression coverage for amount/ownership/claim guards."""
 
 	# --- PaymentIntent ownership ---
 
@@ -106,28 +105,6 @@ class TestSecurityReliability(FrappeTestCase):
 			result = finalize_payment_intent(settings, intent)
 		self.assertEqual(result["status"], "Completed")
 		settings.finalize_request.assert_not_called()
-
-	# --- Save-card consent ownership ---
-
-	def test_setup_future_usage_rejects_wrong_client_secret(self):
-		"""Retrieves the intent, compares its stored client_secret to the supplied one via hmac.compare_digest, and throws PermissionError on mismatch."""
-		settings = MagicMock()
-		client = MagicMock()
-		intent = MagicMock()
-		intent.client_secret = "real_secret"
-		intent.status = "requires_payment_method"
-		intent.metadata = {
-			"reference_doctype": "Payment Request",
-			"reference_docname": "PR-1",
-		}
-		intent.get = lambda k, d=None: (
-			"cus_1" if k == "customer" else intent.metadata if k == "metadata" else d
-		)
-		client.payment_intents.retrieve.return_value = intent
-
-		with patch("stripe_payment.gateway.payment_intents.get_stripe_client", return_value=client):
-			with self.assertRaises(frappe.PermissionError):
-				enable_setup_future_usage(settings, "pi_1", "forged_secret", "Payment Request", "PR-1")
 
 	# --- Reference amount authority (payment_core) ---
 

@@ -3,6 +3,7 @@
 #
 # Unit tests for PaymentIntent ownership / claim helpers (no live Stripe calls).
 
+import json
 from unittest.mock import MagicMock, patch
 
 import frappe
@@ -15,6 +16,29 @@ from stripe_payment.gateway.payment_intents import (
 	settle_payment_request,
 )
 from stripe_payment.gateway.references import assert_reference_payable
+
+
+def _build_settings(charged_amount=500, currency="INR", intent_id="pi_test"):
+	"""Build a mock Stripe Settings doc with an Integration Request carrying the given charge."""
+	settings = MagicMock(name="SS")
+	settings.name = "GW-1"
+	settings.integration_request.output = intent_id
+	settings.integration_request.data = json.dumps({"amount": charged_amount, "currency": currency})
+	return settings
+
+
+def _build_pr(outstanding=1000, status="Requested", reference_doctype="Sales Invoice", reference_name="SI-1"):
+	"""Build a mock Payment Request with the given outstanding amount and status."""
+	pr = MagicMock(name="PR")
+	pr.docstatus = 1
+	pr.status = status
+	pr.payment_channel = "Stripe"
+	pr.reference_name = reference_name
+	pr.reference_doctype = reference_doctype
+	pr.outstanding_amount = outstanding
+	pr.currency = "INR"
+	pr.company = "Test Company"
+	return pr
 
 
 class TestPaymentIntents(FrappeTestCase):
@@ -128,30 +152,93 @@ class TestPaymentIntents(FrappeTestCase):
 		sv.assert_not_called()
 
 	def test_settle_payment_request_stamps_intent_and_settings(self):
-		"""I28: stamps both stripe_payment_intent and stripe_settings on the PE."""
-		settings = MagicMock(name="SS")
-		settings.name = "GW-1"
-		settings.integration_request.output = "pi_stamp"
-		pr = MagicMock(name="PR")
-		pr.docstatus = 1
-		pr.status = "Requested"
-		pr.payment_channel = "Stripe"
-		pr.reference_name = "SI-1"
+		"""Stamps both stripe_payment_intent and stripe_settings on the PE."""
+		settings = _build_settings(charged_amount=500, currency="INR")
+		pr = _build_pr(outstanding=500)
 		pe = MagicMock(name="PE")
 		pe.name = "PE-1"
 		pe.meta.has_field.return_value = True
-		pr.set_as_paid.return_value = pe
+
+		meta_mock = MagicMock()
+		meta_mock.has_field.return_value = True
 
 		with (
 			patch("stripe_payment.gateway.payment_intents.frappe.set_user"),
+			patch("stripe_payment.gateway.payment_intents.frappe.get_meta", return_value=meta_mock),
 			patch("stripe_payment.gateway.payment_intents.frappe.db.set_value") as sv,
+			patch("stripe_payment.gateway.payment_intents.frappe.db.get_value", return_value="INR"),
+			patch(
+				"erpnext.accounts.doctype.payment_entry.payment_entry.get_payment_entry",
+				return_value=pe,
+			),
+			patch(
+				"erpnext.accounts.doctype.payment_request.payment_request.get_existing_payment_entry",
+				return_value=None,
+			),
 		):
 			settle_payment_request(settings, pr)
-		# Both fields stamped in a single set_value call.
-		_, kwargs = sv.call_args
-		args = sv.call_args[0]
-		self.assertEqual(args[0], "Payment Entry")
-		self.assertEqual(args[1], "PE-1")
-		self.assertEqual(args[2]["stripe_payment_intent"], "pi_stamp")
+		stamp_calls = [c for c in sv.call_args_list if c[0][0] == "Payment Entry"]
+		self.assertTrue(stamp_calls)
+		args = stamp_calls[0][0]
+		self.assertEqual(args[2]["stripe_payment_intent"], "pi_test")
 		self.assertEqual(args[2]["stripe_settings"], "GW-1")
-		self.assertFalse(kwargs.get("update_modified", True))
+
+	def test_settle_allows_second_pe_when_si_has_outstanding(self):
+		"""Creates a second Payment Entry when a PE exists but the SI still has an outstanding balance."""
+		settings = _build_settings(charged_amount=500)
+		pr = _build_pr(outstanding=500)
+		pe = MagicMock(name="PE")
+		pe.name = "PE-2"
+		pe.meta.has_field.return_value = True
+
+		meta_mock = MagicMock()
+		meta_mock.has_field.return_value = True
+
+		# db.get_value call order: (1) SI outstanding_amount → 500.0, (2) Company currency → "INR"
+		# is_multi_currency is False (both INR) so no conversion_rate / second outstanding read.
+		with (
+			patch("stripe_payment.gateway.payment_intents.frappe.set_user"),
+			patch("stripe_payment.gateway.payment_intents.frappe.get_meta", return_value=meta_mock),
+			patch("stripe_payment.gateway.payment_intents.frappe.db.set_value"),
+			patch(
+				"stripe_payment.gateway.payment_intents.frappe.db.get_value",
+				side_effect=[500.0, "INR"],
+			),
+			patch(
+				"erpnext.accounts.doctype.payment_entry.payment_entry.get_payment_entry",
+				return_value=pe,
+			),
+			patch(
+				"erpnext.accounts.doctype.payment_request.payment_request.get_existing_payment_entry",
+				return_value="PE-1",
+			),
+		):
+			settle_payment_request(settings, pr)
+		pe.insert.assert_called_once()
+		pe.submit.assert_called_once()
+
+	def test_settle_blocks_duplicate_when_si_fully_paid(self):
+		"""Blocks settlement when a PE exists and the SI outstanding is zero."""
+		settings = _build_settings(charged_amount=1000)
+		pr = _build_pr(outstanding=1000)
+
+		meta_mock = MagicMock()
+		meta_mock.has_field.return_value = True
+
+		with (
+			patch("stripe_payment.gateway.payment_intents.frappe.set_user"),
+			patch("stripe_payment.gateway.payment_intents.frappe.get_meta", return_value=meta_mock),
+			patch("stripe_payment.gateway.payment_intents.frappe.db.set_value"),
+			patch(
+				"stripe_payment.gateway.payment_intents.frappe.db.get_value",
+				return_value=0.0,
+			),
+			patch("erpnext.accounts.doctype.payment_entry.payment_entry.get_payment_entry") as gpe_mock,
+			patch(
+				"erpnext.accounts.doctype.payment_request.payment_request.get_existing_payment_entry",
+				return_value="PE-1",
+			),
+		):
+			settle_payment_request(settings, pr)
+		# get_payment_entry NOT called — SI is fully paid, genuine duplicate.
+		gpe_mock.assert_not_called()

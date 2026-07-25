@@ -9,7 +9,6 @@ from urllib.parse import urlencode
 
 import frappe
 from frappe import _
-from frappe.integrations.utils import make_get_request
 from frappe.model.document import Document
 from frappe.utils import call_hook_method, flt, get_url
 from payment_core.api.controllers import get_gateway_controller_name
@@ -168,15 +167,6 @@ class StripeSettings(GatewayControllerMixin, Document):
 		clear_webhook_secret_cache()
 		clear_api_key_cache()
 
-	@frappe.whitelist()
-	def test_connection(self):
-		"""Verify credentials with a live Stripe call.
-
-		Issued on-demand from the 'Test Connection' desk button so a slow /
-		unreachable Stripe API degrades a click, not every save.
-		"""
-		self.validate_stripe_credentails()
-
 	def on_trash(self):
 		clear_webhook_secret_cache()
 		clear_api_key_cache()
@@ -186,19 +176,6 @@ class StripeSettings(GatewayControllerMixin, Document):
 		endpoint = get_url("/api/method/stripe_payment.stripe.doctype.stripe_settings.webhooks")
 		if self.webhook_endpoint != endpoint:
 			self.db_set("webhook_endpoint", endpoint, update_modified=False)
-
-	def validate_stripe_credentails(self):
-		if self.publishable_key and self.secret_key:
-			header = {
-				"Authorization": "Bearer {}".format(
-					self.get_password(fieldname="secret_key", raise_exception=False)
-				)
-			}
-			try:
-				# PaymentIntents is the current API; /v1/charges is deprecated.
-				make_get_request(url="https://api.stripe.com/v1/payment_intents?limit=1", headers=header)
-			except Exception:
-				frappe.throw(_("Seems Publishable Key or Secret Key is wrong !!!"))
 
 	def validate_transaction_currency(self, currency):
 		if currency not in self.supported_currencies:
@@ -229,9 +206,6 @@ class StripeSettings(GatewayControllerMixin, Document):
 	def create_request(self, data):
 		return payment_intents.create_request(self, data)
 
-	def create_payment_intent_for_checkout(self, data):
-		return payment_intents.create_payment_intent_for_checkout(self, data)
-
 	def create_payment_intent_on_stripe(self):
 		return payment_intents.create_payment_intent_on_stripe(self)
 
@@ -249,14 +223,6 @@ class StripeSettings(GatewayControllerMixin, Document):
 
 	def resolve_stripe_customer(self, stripe, data):
 		return customers.resolve_stripe_customer(stripe, data)
-
-	def create_setup_intent_for_card(self, data):
-		return payment_intents.create_setup_intent_for_card(self, data)
-
-	def enable_setup_future_usage(self, payment_intent, client_secret, reference_doctype, reference_docname):
-		return payment_intents.enable_setup_future_usage(
-			self, payment_intent, client_secret, reference_doctype, reference_docname
-		)
 
 	def create_charge_on_stripe(self):
 		# Deprecated Charges API shim; delegates to PaymentIntents (supports save_card).

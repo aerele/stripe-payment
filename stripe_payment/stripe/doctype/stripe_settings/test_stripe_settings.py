@@ -62,28 +62,13 @@ class TestStripeSettings(FrappeTestCase):
 		clear_webhook_secret_cache()
 		self.assertIsNone(frappe.cache().get_value(WEBHOOK_SECRET_CACHE_KEY))
 
-	def test_test_connection_invokes_credential_check(self):
-		"""test_connection is the on-demand credential validator (desk button)."""
-		settings = frappe.new_doc("Stripe Settings")
-		settings.publishable_key = "pk_test_x"
-		with (
-			patch.object(settings, "secret_key", "sk_test_x", create=True),
-			patch.object(settings, "get_password", return_value="sk_test_x"),
-			patch("stripe_payment.stripe.doctype.stripe_settings.stripe_settings.make_get_request") as m,
-		):
-			settings.test_connection()
-		self.assertTrue(m.called)
-		self.assertIn("payment_intents", m.call_args.kwargs.get("url", ""))
-
 	def test_on_update_does_not_call_validate_credentials(self):
-		"""Save path must be free of network I/O (credential check is on-demand)."""
+		"""Save path must be free of network I/O."""
 		settings = frappe.new_doc("Stripe Settings")
 		settings.gateway_name = "Test"
 		with (
 			patch("stripe_payment.stripe.doctype.stripe_settings.stripe_settings.create_payment_gateway"),
 			patch("stripe_payment.stripe.doctype.stripe_settings.stripe_settings.call_hook_method"),
 			patch.object(settings, "set_webhook_endpoint"),
-			patch.object(settings, "validate_stripe_credentails") as m,
 		):
 			settings.on_update()
-		self.assertFalse(m.called)
