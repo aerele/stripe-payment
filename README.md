@@ -92,3 +92,14 @@ Contributions are welcome. Before opening a pull request, please create or refer
 ## License
 
 This project is licensed under the [MIT License](license.txt).
+
+<br>
+<br>
+<div align="center">
+  <a href="https://aerele.in">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="./stripe_payment/public/images/aerele-dark.png">
+      <img src="./stripe_payment/public/images/aerele.png" alt="Aerele Technologies" height="32"/>
+    </picture>
+  </a>
+</div>
