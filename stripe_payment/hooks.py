@@ -1,8 +1,8 @@
 app_name = "stripe_payment"
 app_title = "Stripe Payment"
-app_publisher = "Frappe Technologies"
+app_publisher = "Aerele Technologies"
 app_description = "Standalone Stripe gateway for Frappe (depends on payment_core)"
-app_email = "hello@frappe.io"
+app_email = "integrations-support@aerele.in"
 app_license = "mit"
 
 required_apps = ["payment_core"]
