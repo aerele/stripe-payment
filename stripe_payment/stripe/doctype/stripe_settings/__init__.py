@@ -5,6 +5,7 @@
 # Verification/dispatch live in stripe_payment.gateway.webhooks.
 
 import frappe
+from payment_core.utils import elevated_user
 
 from stripe_payment.gateway.webhooks import construct_event, handle_event
 
@@ -37,9 +38,5 @@ def webhooks():
 	# gate for this endpoint (Stripe is the caller, not a Frappe user). Elevate
 	# to Administrator so the verified event can settle docs on that account,
 	# then always restore so the next request doesn't stay elevated.
-	original_user = frappe.session.user
-	try:
-		frappe.set_user("Administrator")  # nosemgrep
+	with elevated_user():
 		return handle_event(event, settings)
-	finally:
-		frappe.set_user(original_user)  # nosemgrep

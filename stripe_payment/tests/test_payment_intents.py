@@ -4,26 +4,34 @@
 # Unit tests for PaymentIntent ownership / claim helpers (no live Stripe calls).
 
 import json
+from unittest import skipUnless
 from unittest.mock import MagicMock, patch
 
 import frappe
 from frappe.tests.utils import FrappeTestCase
+from payment_core.utils import settle_payment_request
 
 from stripe_payment.gateway.payment_intents import (
 	assert_intent_matches_reference,
 	claim_integration_request,
 	finalize_payment_intent,
-	settle_payment_request,
 )
 from stripe_payment.gateway.references import assert_reference_payable
+from stripe_payment.stripe.doctype.stripe_settings.stripe_settings import StripeSettings
+
+ERPNext_INSTALLED = "erpnext" in frappe.get_installed_apps()
 
 
 def _build_settings(charged_amount=500, currency="INR", intent_id="pi_test"):
-	"""Build a mock Stripe Settings doc with an Integration Request carrying the given charge."""
+	"""Build a mock controller with an Integration Request carrying the given charge."""
 	settings = MagicMock(name="SS")
 	settings.name = "GW-1"
 	settings.integration_request.output = intent_id
 	settings.integration_request.data = json.dumps({"amount": charged_amount, "currency": currency})
+	# payment_core's settlement seams: the controller reports what Stripe
+	# actually charged and stamps provider fields on the Payment Entry.
+	settings.get_charged_amount = lambda pr, _charged=charged_amount: _charged
+	settings.annotate_payment_entry = MagicMock(name="annotate")
 	return settings
 
 
@@ -37,11 +45,17 @@ def _build_pr(outstanding=1000, status="Requested", reference_doctype="Sales Inv
 	pr.reference_doctype = reference_doctype
 	pr.outstanding_amount = outstanding
 	pr.currency = "INR"
+	pr.party_account_currency = "INR"
+	pr.grand_total = outstanding
 	pr.company = "Test Company"
 	return pr
 
 
 class TestPaymentIntents(FrappeTestCase):
+	def _skip_without_erpnext(self):
+		if not frappe.db.table_exists("Payment Request"):
+			self.skipTest("settlement tests need ERPNext")
+
 	def test_assert_intent_matches_reference_accepts_match(self):
 		settings = MagicMock()
 		settings.data = frappe._dict({"reference_doctype": "Payment Request", "reference_docname": "PR-001"})
@@ -70,13 +84,13 @@ class TestPaymentIntents(FrappeTestCase):
 		settings.integration_request = MagicMock()
 		settings.integration_request.name = "IR-TEST"
 
-		with patch("stripe_payment.gateway.payment_intents.frappe.db.get_value", return_value="Queued"):
+		with patch("payment_core.utils.frappe.db.get_value", return_value="Queued"):
 			self.assertTrue(claim_integration_request(settings))
 			settings.integration_request.db_set.assert_called_with(
 				"status", "Completed", update_modified=False
 			)
 
-		with patch("stripe_payment.gateway.payment_intents.frappe.db.get_value", return_value="Completed"):
+		with patch("payment_core.utils.frappe.db.get_value", return_value="Completed"):
 			self.assertFalse(claim_integration_request(settings))
 
 	def test_finalize_payment_intent_idempotent_when_already_completed(self):
@@ -97,8 +111,8 @@ class TestPaymentIntents(FrappeTestCase):
 		}
 
 		with (
-			patch("stripe_payment.gateway.payment_intents.frappe.db.exists", return_value=True),
-			patch("stripe_payment.gateway.payment_intents.frappe.get_doc", return_value=ir),
+			patch("payment_core.utils.frappe.db.exists", return_value=True),
+			patch("payment_core.utils.frappe.get_doc", return_value=ir),
 		):
 			result = finalize_payment_intent(settings, intent)
 
@@ -140,18 +154,21 @@ class TestPaymentIntents(FrappeTestCase):
 			assert_reference_payable("Payment Request", "PR-OPEN")
 
 	def test_settle_payment_request_skips_already_paid(self):
+		self._skip_without_erpnext()
 		"""I28: extraction preserved the early-return guards."""
 		settings = MagicMock(name="SS")
 		settings.name = "GW-1"
 		pr = MagicMock(name="PR")
 		pr.docstatus = 1
 		pr.status = "Paid"
-		with patch("stripe_payment.gateway.payment_intents.frappe.db.set_value") as sv:
-			settle_payment_request(settings, pr)
+		with patch("payment_core.utils.frappe.db.set_value") as sv:
+			settle_payment_request(pr, controller=settings)
 		pr.set_as_paid.assert_not_called()
 		sv.assert_not_called()
 
+	@skipUnless(ERPNext_INSTALLED, "ERPNext settlement is optional for stripe_payment")
 	def test_settle_payment_request_stamps_intent_and_settings(self):
+		self._skip_without_erpnext()
 		"""Stamps both stripe_payment_intent and stripe_settings on the PE."""
 		settings = _build_settings(charged_amount=500, currency="INR")
 		pr = _build_pr(outstanding=500)
@@ -163,10 +180,14 @@ class TestPaymentIntents(FrappeTestCase):
 		meta_mock.has_field.return_value = True
 
 		with (
-			patch("stripe_payment.gateway.payment_intents.frappe.set_user"),
-			patch("stripe_payment.gateway.payment_intents.frappe.get_meta", return_value=meta_mock),
-			patch("stripe_payment.gateway.payment_intents.frappe.db.set_value") as sv,
-			patch("stripe_payment.gateway.payment_intents.frappe.db.get_value", return_value="INR"),
+			patch("payment_core.utils.frappe.set_user"),
+			# nowdate() resolves the system timezone through a System Settings DB
+			# fetch on this branch; keep the db mocks from starving it.
+			patch("payment_core.utils.nowdate", return_value="2026-09-18"),
+			patch("payment_core.utils.frappe.get_meta", return_value=meta_mock),
+			patch("payment_core.utils.frappe.db.set_value"),
+			patch("payment_core.utils.frappe.db.table_exists", return_value=False),
+			patch("payment_core.utils.frappe.db.get_value", return_value="INR"),
 			patch(
 				"erpnext.accounts.doctype.payment_entry.payment_entry.get_payment_entry",
 				return_value=pe,
@@ -176,14 +197,47 @@ class TestPaymentIntents(FrappeTestCase):
 				return_value=None,
 			),
 		):
-			settle_payment_request(settings, pr)
-		stamp_calls = [c for c in sv.call_args_list if c[0][0] == "Payment Entry"]
-		self.assertTrue(stamp_calls)
-		args = stamp_calls[0][0]
-		self.assertEqual(args[2]["stripe_payment_intent"], "pi_test")
-		self.assertEqual(args[2]["stripe_settings"], "GW-1")
+			settle_payment_request(pr, controller=settings)
+		# the controller's annotation seam is invoked with the booked PE
+		settings.annotate_payment_entry.assert_called_once()
+		_annotated_pe, _annotated_pr = settings.annotate_payment_entry.call_args[0]
+		self.assertEqual(_annotated_pe.name, "PE-1")
+		self.assertIs(_annotated_pr, pr)
 
+	def test_controller_stamps_intent_and_settings_on_pe(self):
+		self._skip_without_erpnext()
+		"""StripeSettings.annotate_payment_entry stamps the provider ids for refund lookups."""
+		settings = StripeSettings({"doctype": "Stripe Settings"})
+		settings.name = "GW-1"
+		settings.integration_request = MagicMock()
+		settings.integration_request.output = "pi_test"
+		pe = MagicMock(name="PE")
+		pe.name = "PE-1"
+		pe.meta.has_field.return_value = True
+
+		with patch("stripe_payment.stripe.doctype.stripe_settings.stripe_settings.frappe.db.set_value") as sv:
+			settings.annotate_payment_entry(pe, None)
+
+		sv.assert_called_once_with(
+			"Payment Entry",
+			"PE-1",
+			{"stripe_payment_intent": "pi_test", "stripe_settings": "GW-1"},
+			update_modified=False,
+		)
+
+	def test_controller_get_charged_amount_reads_integration_request(self):
+		self._skip_without_erpnext()
+		"""StripeSettings.get_charged_amount reports the actually-charged amount."""
+		settings = StripeSettings({"doctype": "Stripe Settings"})
+		settings.integration_request = MagicMock()
+		settings.integration_request.output = "pi_test"
+		settings.integration_request.data = json.dumps({"amount": 424, "currency": "INR"})
+
+		self.assertEqual(settings.get_charged_amount(None), 424)
+
+	@skipUnless(ERPNext_INSTALLED, "ERPNext settlement is optional for stripe_payment")
 	def test_settle_allows_second_pe_when_si_has_outstanding(self):
+		self._skip_without_erpnext()
 		"""Creates a second Payment Entry when a PE exists but the SI still has an outstanding balance."""
 		settings = _build_settings(charged_amount=500)
 		pr = _build_pr(outstanding=500)
@@ -197,11 +251,15 @@ class TestPaymentIntents(FrappeTestCase):
 		# db.get_value call order: (1) SI outstanding_amount → 500.0, (2) Company currency → "INR"
 		# is_multi_currency is False (both INR) so no conversion_rate / second outstanding read.
 		with (
-			patch("stripe_payment.gateway.payment_intents.frappe.set_user"),
-			patch("stripe_payment.gateway.payment_intents.frappe.get_meta", return_value=meta_mock),
-			patch("stripe_payment.gateway.payment_intents.frappe.db.set_value"),
+			patch("payment_core.utils.frappe.set_user"),
+			# nowdate() resolves the system timezone through a System Settings DB
+			# fetch on this branch; keep the db mocks from starving it.
+			patch("payment_core.utils.nowdate", return_value="2026-09-18"),
+			patch("payment_core.utils.frappe.get_meta", return_value=meta_mock),
+			patch("payment_core.utils.frappe.db.set_value"),
+			patch("payment_core.utils.frappe.db.table_exists", return_value=False),
 			patch(
-				"stripe_payment.gateway.payment_intents.frappe.db.get_value",
+				"payment_core.utils.frappe.db.get_value",
 				side_effect=[500.0, "INR"],
 			),
 			patch(
@@ -213,11 +271,12 @@ class TestPaymentIntents(FrappeTestCase):
 				return_value="PE-1",
 			),
 		):
-			settle_payment_request(settings, pr)
+			settle_payment_request(pr, controller=settings)
 		pe.insert.assert_called_once()
 		pe.submit.assert_called_once()
 
 	def test_settle_blocks_duplicate_when_si_fully_paid(self):
+		self._skip_without_erpnext()
 		"""Blocks settlement when a PE exists and the SI outstanding is zero."""
 		settings = _build_settings(charged_amount=1000)
 		pr = _build_pr(outstanding=1000)
@@ -226,11 +285,15 @@ class TestPaymentIntents(FrappeTestCase):
 		meta_mock.has_field.return_value = True
 
 		with (
-			patch("stripe_payment.gateway.payment_intents.frappe.set_user"),
-			patch("stripe_payment.gateway.payment_intents.frappe.get_meta", return_value=meta_mock),
-			patch("stripe_payment.gateway.payment_intents.frappe.db.set_value"),
+			patch("payment_core.utils.frappe.set_user"),
+			# nowdate() resolves the system timezone through a System Settings DB
+			# fetch on this branch; keep the db mocks from starving it.
+			patch("payment_core.utils.nowdate", return_value="2026-09-18"),
+			patch("payment_core.utils.frappe.get_meta", return_value=meta_mock),
+			patch("payment_core.utils.frappe.db.set_value"),
+			patch("payment_core.utils.frappe.db.table_exists", return_value=False),
 			patch(
-				"stripe_payment.gateway.payment_intents.frappe.db.get_value",
+				"payment_core.utils.frappe.db.get_value",
 				return_value=0.0,
 			),
 			patch("erpnext.accounts.doctype.payment_entry.payment_entry.get_payment_entry") as gpe_mock,
@@ -239,6 +302,6 @@ class TestPaymentIntents(FrappeTestCase):
 				return_value="PE-1",
 			),
 		):
-			settle_payment_request(settings, pr)
+			settle_payment_request(pr, controller=settings)
 		# get_payment_entry NOT called — SI is fully paid, genuine duplicate.
 		gpe_mock.assert_not_called()

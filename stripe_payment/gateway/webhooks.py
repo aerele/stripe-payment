@@ -5,6 +5,12 @@
 # payments.payment_gateways.doctype.stripe_settings.webhooks and delegates here.
 
 import frappe
+import stripe
+from frappe.utils.password import get_decrypted_password
+from payment_core.webhooks import DUPLICATE, get_or_create_log, mark_failed, mark_processed
+
+from stripe_payment.gateway import reconciliation
+from stripe_payment.gateway.references import _gateway_string
 
 WEBHOOK_SECRET_CACHE_KEY = "stripe_webhook_secrets"
 
@@ -14,8 +20,6 @@ def construct_event(payload, sig_header):
 
 	Returns (event, settings_doc) on success, (None, None) on failure.
 	"""
-	import stripe
-
 	if not sig_header:
 		return None, None
 
@@ -47,54 +51,32 @@ def handle_event(event, settings):
 	restore the original user in its own finally block.
 	"""
 	event_id = event["id"]
-	prior = frappe.db.get_value(
-		"Stripe Webhook Log", {"stripe_event_id": event_id}, ["name", "status"], as_dict=True
+	obj = event["data"]["object"]
+	log, duplicate = get_or_create_log(
+		source=_gateway_string(settings) if settings else "Stripe",
+		event_id=event_id,
+		event_type=event["type"],
+		payload=event,
+		provider_reference=obj.get("id"),
 	)
-	if prior and prior.status != "Failed":
-		return {"status": "duplicate"}
-
-	if prior:
-		log = frappe.get_doc("Stripe Webhook Log", prior.name)
-	else:
-		obj = event["data"]["object"]
-		log = frappe.get_doc(
-			{
-				"doctype": "Stripe Webhook Log",
-				"stripe_event_id": event_id,
-				"event_type": event["type"],
-				"stripe_object_id": obj.get("id"),
-				"status": "Received",
-				"stripe_settings": settings.name if settings else None,
-				"payload": frappe.as_json(event),
-			}
-		)
-		try:
-			# Caller has elevated to Administrator, so the insert is already
-			# privileged — no ignore_permissions needed.
-			log.insert()
-		except frappe.exceptions.DuplicateEntryError:
-			# Concurrent delivery already inserted it; the unique stripe_event_id
-			# index is the real dedupe guard, so no early commit is needed.
-			return {"status": "duplicate"}
+	if duplicate:
+		return DUPLICATE
 
 	# Run the handler inside a savepoint: a failure rolls back only the handler's
 	# partial writes while keeping the log row, and the request transaction is
 	# committed by Frappe once we return — no manual commit required.
 	frappe.db.savepoint("stripe_webhook_handler")
 	try:
-		# Local import keeps reconciliation (and its erpnext-touching helpers) out
-		# of this module's import path until an event is actually processed.
-		from stripe_payment.gateway import reconciliation
-
 		result = reconciliation.route_event(event, settings) or {}
-		log.db_set("status", result.get("status_label", "Processed"), update_modified=False)
-		if result.get("reference_doctype"):
-			log.db_set("reference_doctype", result.get("reference_doctype"), update_modified=False)
-			log.db_set("reference_name", result.get("reference_name"), update_modified=False)
+		mark_processed(
+			log.name,
+			status=result.get("status_label", "Processed"),
+			reference_doctype=result.get("reference_doctype"),
+			reference_docname=result.get("reference_name"),
+		)
 	except Exception:
 		frappe.db.rollback(save_point="stripe_webhook_handler")
-		log.db_set("status", "Failed", update_modified=False)
-		log.db_set("error", frappe.get_traceback(), update_modified=False)
+		mark_failed(log.name, frappe.get_traceback())
 		frappe.log_error(frappe.get_traceback(), "Stripe webhook processing failed")
 		# Transient failure — ask Stripe to retry; the dedupe above reprocesses the Failed row.
 		frappe.local.response["http_status_code"] = 500
@@ -105,8 +87,6 @@ def handle_event(event, settings):
 
 def get_webhook_secrets():
 	def _load():
-		from frappe.utils.password import get_decrypted_password
-
 		secrets = []
 		# Read the encrypted secret directly from the password store — no per-row
 		# get_doc (which would load the whole Settings document each iteration).

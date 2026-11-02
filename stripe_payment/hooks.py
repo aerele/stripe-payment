@@ -9,7 +9,14 @@ required_apps = ["payment_core"]
 
 payment_gateway_module = {"Stripe": "stripe_payment.gateway"}
 
-# Programmatic subscription create (ERPNext Payment Request / payment_core dispatcher).
+# Settings doctypes this gateway app owns. The Gateway Settings hub lists
+# these in its "Add Gateway" picker so new gateway accounts are created
+# through the settings form (which registers the Payment Gateway row itself
+# on save), instead of hand-built Payment Gateway rows that duplicate the
+# automatic ones.
+payment_gateway_settings_doctypes = ["Stripe Settings"]
+
+# Programmatic subscription create (optional ERPNext compatibility / payment_core dispatcher).
 gateway_subscription_handler = {
 	"stripe": "stripe_payment.gateway.subscriptions.create_stripe_subscription",
 }
@@ -30,13 +37,7 @@ scheduler_events = {
 	"hourly": ["stripe_payment.gateway.reconciliation.sweep_pending"],
 }
 
-add_to_apps_screen = [
-	{
-		"name": "stripe_payment",
-		"logo": "/assets/stripe_payment/images/stripe_payment-logo.svg",
-		"title": "Stripe Payment",
-		"route": "/app",
-	}
-]
+# No add_to_apps_screen: gateways are payment_core plugins, configured from
+# the Payment Core workspace (Payment Gateway registry / analytics dashboard).
 
 export_python_type_annotations = True
