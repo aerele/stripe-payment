@@ -10,14 +10,16 @@ import frappe
 import stripe
 from frappe import _
 from frappe.integrations.utils import create_request_log
-from frappe.utils import cint, flt, nowdate
+from frappe.utils import flt
 
 from stripe_payment.gateway.client import get_stripe_client, idempotency_key, to_minor_units
 from stripe_payment.gateway.customers import resolve_stripe_customer
 from stripe_payment.gateway.references import (
 	assert_reference_payable,
+	ensure_payment_transaction,
 	get_stripe_metadata,
 	success_redirect,
+	sync_payment_transaction,
 )
 
 
@@ -29,6 +31,7 @@ def create_request(settings, data):
 		assert_reference_payable(
 			settings.data.get("reference_doctype"), settings.data.get("reference_docname")
 		)
+		ensure_payment_transaction(settings, settings.data)
 		if settings.data.get("payment_intent"):
 			return finalize_payment_intent_by_id(settings, settings.data.get("payment_intent"))
 
@@ -71,6 +74,7 @@ def create_payment_intent_for_checkout(settings, data):
 	"""Embedded Elements: unconfirmed PaymentIntent (with Stripe customer when resolvable)."""
 	data = frappe._dict(data)
 	assert_reference_payable(data.get("reference_doctype"), data.get("reference_docname"))
+	ensure_payment_transaction(settings, data)
 	client = get_stripe_client(settings)
 
 	reused = _reuse_open_checkout_intent(client, data)
@@ -161,18 +165,21 @@ def create_payment_intent_on_stripe(settings):
 
 	except stripe.error.CardError as e:
 		settings.integration_request.db_set("status", "Failed", update_modified=False)
+		sync_payment_transaction(settings.data, "Failed", error_message=e.user_message)
 		settings.integration_request.db_set("error", frappe.as_json(e.json_body), update_modified=False)
 		return {"redirect_to": "payment-failed", "status": "Failed", "error": e.user_message}
 
 
 def handle_payment_intent_status(settings, intent):
 	if intent.status == "succeeded":
-		settings.integration_request.db_set("status", "Completed", update_modified=False)
-		settings.integration_request.db_set("output", intent.id, update_modified=False)
-		settings.flags.status_changed_to = "Completed"
-		return settings.finalize_request()
+		return finalize_payment_intent(
+			settings,
+			intent,
+			integration_request=settings.integration_request.name,
+		)
 
 	if intent.status in ("requires_action", "requires_confirmation"):
+		sync_payment_transaction(settings.data, "Pending", provider_transaction_id=intent.id)
 		return {
 			"requires_action": True,
 			"client_secret": intent.client_secret,
@@ -181,9 +188,11 @@ def handle_payment_intent_status(settings, intent):
 		}
 
 	if intent.status == "processing":
+		sync_payment_transaction(settings.data, "Pending", provider_transaction_id=intent.id)
 		return {"redirect_to": success_redirect(dict(intent.get("metadata") or {})), "status": "Pending"}
 
 	settings.integration_request.db_set("status", "Failed", update_modified=False)
+	sync_payment_transaction(settings.data, "Failed", provider_transaction_id=intent.id)
 	return {"redirect_to": "payment-failed", "status": "Failed"}
 
 
@@ -240,6 +249,7 @@ def finalize_payment_intent_by_id(settings, pi_id):
 	if intent.status == "succeeded":
 		return finalize_payment_intent(settings, intent)
 	if intent.status in ("requires_action", "requires_confirmation"):
+		sync_payment_transaction(settings.data, "Pending", provider_transaction_id=intent.id)
 		return {
 			"requires_action": True,
 			"client_secret": intent.client_secret,
@@ -265,6 +275,16 @@ def finalize_payment_intent(settings, intent, integration_request=None):
 		)
 
 	if settings.integration_request.status == "Completed":
+		sync_payment_transaction(
+			metadata,
+			"Completed",
+			provider_transaction_id=intent.get("id"),
+			metadata={
+				"stripe_payment_intent": intent.get("id"),
+				"intent_status": intent.get("status"),
+				"latest_charge": intent.get("latest_charge") or "",
+			},
+		)
 		return {"redirect_to": success_redirect(metadata), "status": "Completed"}
 
 	if not claim_integration_request(settings):
@@ -274,94 +294,26 @@ def finalize_payment_intent(settings, intent, integration_request=None):
 		{
 			"reference_doctype": metadata.get("reference_doctype"),
 			"reference_docname": metadata.get("reference_docname"),
+			"payment_transaction": metadata.get("payment_transaction"),
 		}
 	)
 	settings.integration_request.db_set("output", intent.get("id"), update_modified=False)
 	settings.flags.status_changed_to = "Completed"
-	return settings.finalize_request()
-
-
-def settle_payment_request(settings, pr):
-	"""Create a Payment Entry for the actual Stripe charge amount, letting ERPNext update PR status and outstanding automatically."""
-	if pr.docstatus != 1 or pr.status == "Paid":
-		return
-	if pr.payment_channel == "Phone":
-		pr.db_set({"status": "Paid", "outstanding_amount": 0})
-		return
-
-	from payment_core.utils import erpnext_app_import_guard
-
-	with erpnext_app_import_guard():
-		from erpnext.accounts.doctype.payment_entry.payment_entry import get_payment_entry
-		from erpnext.accounts.doctype.payment_request.payment_request import (
-			get_existing_payment_entry,
-		)
-
-	# Allow a second PE when the reference document still has an outstanding balance.
-	if pr.reference_name and get_existing_payment_entry(pr.reference_name):
-		# Sales Orders don't have outstanding_amount — only block if the doctype has it and it's zero.
-		if frappe.get_meta(pr.reference_doctype).has_field("outstanding_amount"):
-			si_outstanding = flt(
-				frappe.db.get_value(pr.reference_doctype, pr.reference_name, "outstanding_amount")
-			)
-			if si_outstanding <= 0:
-				return
-
-	# Determine the actual charged amount; default to PR outstanding for full payments.
-	intent_id = getattr(getattr(settings, "integration_request", None), "output", None)
-	charged_amount = _get_charged_amount(settings, intent_id)
-	original_outstanding = flt(pr.outstanding_amount)
-
-	if charged_amount and charged_amount < original_outstanding:
-		pe_amount = charged_amount
-	else:
-		pe_amount = original_outstanding
-
-	# For multi-currency, convert the charged amount to company currency (INR) using
-	# the reference doc's exchange rate, because ERPNext's get_payment_entry treats
-	# party_amount as the party-account currency (company currency for most setups).
-	company_currency = frappe.db.get_value("Company", pr.company, "default_currency")
-	is_multi_currency = (pr.currency or "") != (company_currency or "")
-
-	if is_multi_currency and charged_amount and charged_amount < original_outstanding:
-		ref_conversion_rate = flt(
-			frappe.db.get_value(pr.reference_doctype, pr.reference_name, "conversion_rate")
-		)
-		# Round to the company's currency precision so the PE amount matches what ERPNext books.
-		currency_precision = (
-			frappe.get_cached_value("System Settings", "System Settings", "currency_precision") or 2
-		)
-		pe_amount = flt(charged_amount * ref_conversion_rate, cint(currency_precision))
-		# Cap to the actual outstanding so rounding never over-allocates.
-		if frappe.get_meta(pr.reference_doctype).has_field("outstanding_amount"):
-			ref_outstanding = flt(
-				frappe.db.get_value(pr.reference_doctype, pr.reference_name, "outstanding_amount")
-			)
-			if ref_outstanding > 0:
-				pe_amount = min(pe_amount, ref_outstanding)
-
-	original_user = frappe.session.user
-	try:
-		frappe.set_user("Administrator")  # nosemgrep
-		payment_entry = get_payment_entry(
-			pr.reference_doctype,
-			pr.reference_name,
-			party_amount=pe_amount,
-			bank_account=pr.payment_account,
-		)
-		payment_entry.reference_no = pr.name
-		payment_entry.reference_date = nowdate()
-		payment_entry.insert(ignore_permissions=True)
-		payment_entry.submit()
-	finally:
-		frappe.set_user(original_user)  # nosemgrep
-
-	# Stamp the PaymentIntent and owning Stripe Settings onto the PE for refund lookups.
-	if intent_id and payment_entry and payment_entry.meta.has_field("stripe_payment_intent"):
-		updates = {"stripe_payment_intent": intent_id}
-		if payment_entry.meta.has_field("stripe_settings"):
-			updates["stripe_settings"] = settings.name
-		frappe.db.set_value("Payment Entry", payment_entry.name, updates, update_modified=False)
+	# finalize FIRST so a custom on_payment_authorized's redirect survives:
+	# the sync below would let payment_core's authorize consume the flag
+	# before the app's own handler runs (same fix as Hosted Checkout)
+	result = settings.finalize_request()
+	sync_payment_transaction(
+		metadata,
+		"Completed",
+		provider_transaction_id=intent.get("id"),
+		metadata={
+			"stripe_payment_intent": intent.get("id"),
+			"intent_status": intent.get("status"),
+			"latest_charge": intent.get("latest_charge") or "",
+		},
+	)
+	return result
 
 
 def _get_charged_amount(settings, intent_id):

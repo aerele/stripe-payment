@@ -10,20 +10,23 @@ import frappe
 from frappe import _
 from frappe.integrations.utils import create_request_log
 from frappe.utils import get_url
-from payment_core.utils import get_reference_amount, guard_payment_reference
+from payment_core.utils import get_reference_amount, guard_payment_reference, initiate_transaction
 
 from stripe_payment.gateway.client import get_stripe_client, to_minor_units
 from stripe_payment.gateway.customers import get_party_for_reference, resolve_stripe_customer
 from stripe_payment.gateway.payment_intents import claim_integration_request
 from stripe_payment.gateway.references import (
+	ensure_payment_transaction,
 	get_stripe_metadata,
 	is_subscription_reference,
 	success_redirect,
+	sync_payment_transaction,
 )
 from stripe_payment.gateway.subscriptions import (
 	find_erpnext_subscription,
 	get_subscription_line_items,
 	get_subscription_plan_details,
+	link_stripe_subscription,
 )
 
 
@@ -35,12 +38,46 @@ def get_payment_url(settings, **kwargs):
 def create_checkout_session(settings, data):
 	"""Hosted Checkout: build a Stripe-hosted payment or subscription page."""
 	data = frappe._dict(data)
-	# Never trust a client-supplied amount/currency or an unvalidated reference.
+	# Never trust a client-supplied amount when a server-side source has one.
+	# Priority: the shared Payment Transaction's amount (already computed as
+	# the open balance for partial payments) > the reference document's amount
+	# (full total, authoritative on first attempt) > the caller's own amount
+	# (own-flow apps whose doctype carries no amount field, e.g. LMS Course).
 	guard_payment_reference(data.reference_doctype, data.reference_docname)
-	data.amount, currency = get_reference_amount(data.reference_doctype, data.reference_docname)
-	if currency:
-		data.currency = currency
 
+	payment_transaction_supplied = bool(data.payment_transaction)
+	# ensure FIRST: a checkout-first attempt creates the transaction with the
+	# open balance; reading it after the amount block would miss it
+	ensure_payment_transaction(settings, data)
+
+	# Amount authority: a Payment Transaction's outstanding_amount (validated
+	# against the reference) > the reference's amount > the caller's own
+	if data.payment_transaction and frappe.db.table_exists("Payment Transaction"):
+		txn = frappe.db.get_value(
+			"Payment Transaction",
+			data.payment_transaction,
+			["outstanding_amount", "reference_doctype", "reference_docname", "currency"],
+			as_dict=True,
+		)
+		if txn and (txn.reference_doctype, txn.reference_docname) == (
+			data.reference_doctype,
+			data.reference_docname,
+		):
+			data.amount = txn.outstanding_amount
+			# the amount above is in the transaction's currency; the caller's
+			# own currency (e.g. a Web Form field) may differ
+			if txn.currency:
+				data.currency = txn.currency
+		elif txn:
+			frappe.throw(_("Payment Transaction does not belong to this reference."))
+	else:
+		reference_amount, currency = get_reference_amount(data.reference_doctype, data.reference_docname)
+		if reference_amount is not None:
+			data.amount = reference_amount
+		if currency:
+			data.currency = currency
+	if data.amount is None:
+		frappe.throw(_("Cannot determine the payable amount for {0}.").format(data.reference_doctype))
 	client = get_stripe_client(settings)
 	integration_request = create_request_log(data, service_name="Stripe")
 
@@ -82,6 +119,28 @@ def create_checkout_session(settings, data):
 		session = client.checkout.sessions.create(session_params)
 
 	integration_request.db_set("output", session.id, update_modified=False)
+	sync_payment_transaction(
+		data,
+		None if payment_transaction_supplied else "Pending",
+		provider_transaction_id=session.id,
+		checkout_url=session.url,
+		provider_customer_id=session.get("customer"),
+		metadata={
+			"stripe_session_id": session.id,
+			"integration_request": integration_request.name,
+		},
+	)
+	# checkout-first origin: the transaction was created as Draft; submit it
+	# now that its payment URL exists. Must be elevated: Web Form accept runs
+	# as Guest, and Document.submit checks the submit permission which
+	# Payment Transaction grants only to System/Payment Manager/User.
+	# initiate_transaction wraps the submit in elevated_user and is idempotent.
+	if (
+		not payment_transaction_supplied
+		and data.payment_transaction
+		and frappe.db.get_value("Payment Transaction", data.payment_transaction, "docstatus") == 0
+	):
+		initiate_transaction(data.payment_transaction)
 	return session.url
 
 
@@ -136,13 +195,29 @@ def finalize_checkout_session(settings, session_id):
 		)
 
 	if settings.integration_request.status == "Completed":
+		sync_payment_transaction(
+			metadata,
+			"Completed",
+			provider_transaction_id=(
+				session.get("payment_intent") or settings.integration_request.output or session_id
+			),
+			provider_customer_id=session.get("customer"),
+			metadata={"stripe_session_id": session_id},
+		)
 		return {"redirect_to": success_redirect(metadata), "status": "Completed"}
 
 	if session.get("payment_status") not in ("paid", "no_payment_required"):
 		if session.get("status") == "complete":
 			# Async method (bank debit): the session is done but settlement is deferred
 			# to payment_intent.succeeded. Surface Pending, not Failed.
+			sync_payment_transaction(metadata, "Pending", provider_transaction_id=session_id)
 			return {"redirect_to": success_redirect(metadata), "status": "Pending"}
+		if session.get("status") == "open":
+			# buyer is still on Stripe; the poller will re-check. Don't mark
+			# Failed while the session may still complete.
+			return {"redirect_to": success_redirect(metadata), "status": "Pending"}
+		# expired or explicitly failed
+		sync_payment_transaction(metadata, "Failed", provider_transaction_id=session_id)
 		return {"redirect_to": "payment-failed", "status": "Failed"}
 
 	output_id = session.get("payment_intent")
@@ -150,8 +225,6 @@ def finalize_checkout_session(settings, session_id):
 		# Link ERPNext subscription when present in metadata.
 		erpnext_sub = metadata.get("erpnext_subscription")
 		if erpnext_sub and frappe.db.exists("Subscription", erpnext_sub):
-			from stripe_payment.gateway.subscriptions import link_stripe_subscription
-
 			link_stripe_subscription(erpnext_sub, session.get("subscription"), session.get("customer"))
 
 		# Subscription-mode sessions carry no top-level PaymentIntent; stamp the
@@ -173,11 +246,23 @@ def finalize_checkout_session(settings, session_id):
 		{
 			"reference_doctype": metadata.get("reference_doctype"),
 			"reference_docname": metadata.get("reference_docname"),
+			"payment_transaction": metadata.get("payment_transaction"),
 		}
 	)
 	settings.integration_request.db_set("output", output_id, update_modified=False)
 	settings.flags.status_changed_to = "Completed"
-	return settings.finalize_request()
+	# finalize FIRST so a custom on_payment_authorized's redirect survives:
+	# syncing "Completed" before finalize would let update_payment_transaction's
+	# internal authorize_reference consume the reference_authorized flag, and
+	# StripeSettings.authorize_reference would then return None
+	result = settings.finalize_request()
+	sync_payment_transaction(
+		metadata,
+		"Completed",
+		provider_transaction_id=output_id,
+		provider_customer_id=session.get("customer"),
+	)
+	return result
 
 
 def checkout_success(session_id, gateway):
@@ -191,11 +276,25 @@ def checkout_success(session_id, gateway):
 		frappe.local.response["location"] = "/payment-failed"
 		return
 
+	# Stripe redirects the buyer's browser here as a GET; frappe only commits
+	# request transactions for unsafe methods (frappe/app.py), so without this
+	# flag the settlement below is silently rolled back while the redirect
+	# still goes out.
+	frappe.local.flags.commit = True
+
 	result = {}
 	try:
 		settings = frappe.get_doc("Stripe Settings", gateway)
-		# Idempotent settlement; Frappe commits at request end before the redirect.
-		result = finalize_checkout_session(settings, session_id) or {}
+		# savepoint: if finalize throws after claim_integration_request marks
+		# the IR Completed, that committed state would make the webhook
+		# short-circuit on "already Completed" — rolling back the savepoint
+		# lets the webhook retry cleanly
+		frappe.db.savepoint("checkout_success")
+		try:
+			result = finalize_checkout_session(settings, session_id) or {}
+		except Exception:
+			frappe.db.rollback(save_point="checkout_success")
+			raise
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "Stripe checkout return failed")
 

@@ -3,10 +3,11 @@
 #
 # Unit tests for the Stripe Settings controller (validation + webhook helpers).
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import frappe
 from frappe.tests.utils import FrappeTestCase
+from frappe.utils import get_url
 
 from stripe_payment.gateway.webhooks import WEBHOOK_SECRET_CACHE_KEY
 from stripe_payment.stripe.doctype.stripe_settings.stripe_settings import (
@@ -47,8 +48,6 @@ class TestStripeSettings(FrappeTestCase):
 		self.assertIn("stripe_payment.stripe.doctype.stripe_settings.webhooks", value)
 
 	def test_set_webhook_endpoint_noop_when_unchanged(self):
-		from frappe.utils import get_url
-
 		settings = frappe.new_doc("Stripe Settings")
 		settings.webhook_endpoint = get_url(
 			"/api/method/stripe_payment.stripe.doctype.stripe_settings.webhooks"
@@ -72,3 +71,52 @@ class TestStripeSettings(FrappeTestCase):
 			patch.object(settings, "set_webhook_endpoint"),
 		):
 			settings.on_update()
+
+	def test_refund_passes_idempotency_key_as_request_option(self):
+		settings = frappe.new_doc("Stripe Settings")
+		settings.name = "GW-1"
+		client = MagicMock()
+		client.refunds.create.return_value = {"id": "re_test_1"}
+
+		with (
+			patch.object(frappe.db, "table_exists", return_value=True),
+			patch.object(
+				frappe.db,
+				"get_value",
+				return_value=frappe._dict(provider_transaction_id="pi_test_1", currency="USD"),
+			),
+			patch(
+				"stripe_payment.stripe.doctype.stripe_settings.stripe_settings.get_stripe_client",
+				return_value=client,
+			),
+		):
+			refund_id = settings.refund_transaction("TXN-1", 12.34, idempotency_key="pc-refund-TXN-1-1-12.34")
+
+		self.assertEqual(refund_id, "re_test_1")
+		client.refunds.create.assert_called_once_with(
+			{"payment_intent": "pi_test_1", "amount": 1234},
+			{"idempotency_key": "pc-refund-TXN-1-1-12.34"},
+		)
+
+	def test_authorize_reference_skips_when_ledger_already_authorized(self):
+		settings = frappe.new_doc("Stripe Settings")
+		settings.data = frappe._dict(
+			{
+				"reference_doctype": "Order",
+				"reference_docname": "ORDER-1",
+				"payment_transaction": "PAY-TXN-1",
+			}
+		)
+		settings.flags.status_changed_to = "Completed"
+
+		with (
+			patch.object(frappe.db, "table_exists", return_value=True),
+			patch.object(frappe.db, "get_value", return_value=1),
+			patch(
+				"stripe_payment.stripe.doctype.stripe_settings.stripe_settings.authorize_reference"
+			) as authorize,
+		):
+			result = settings.authorize_reference()
+
+		self.assertIsNone(result)
+		authorize.assert_not_called()

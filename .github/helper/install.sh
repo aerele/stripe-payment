@@ -19,7 +19,7 @@ git clone "https://github.com/${frappeuser}/frappe" --branch "${frappebranch}" -
 bench init --skip-assets --frappe-path ~/frappe --python "$(which python)" frappe-bench
 
 mkdir ~/frappe-bench/sites/test_site
-cp -r "${GITHUB_WORKSPACE}/.github/helper/site_config.json" ~/frappe-bench/sites/test_site/
+cp "${GITHUB_WORKSPACE}/.github/helper/${SITE_CONFIG:-site_config.json}" ~/frappe-bench/sites/test_site/site_config.json
 
 mariadb --host 127.0.0.1 --port 3306 -u root -proot -e "SET GLOBAL character_set_server = 'utf8mb4'"
 mariadb --host 127.0.0.1 --port 3306 -u root -proot -e "SET GLOBAL collation_server = 'utf8mb4_unicode_ci'"

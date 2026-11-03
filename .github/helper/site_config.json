@@ -11,6 +11,10 @@
     "root_login": "root",
     "root_password": "root",
     "host_name": "http://test_site:8000",
-    "install_apps": ["payment_core", "stripe_payment", "erpnext"],
+    "install_apps": [
+        "erpnext",
+        "payment_core",
+        "stripe_payment"
+    ],
     "throttle_user_limit": 100
 }

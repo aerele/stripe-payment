@@ -3,7 +3,7 @@
 <img src="stripe_payment/public/images/stripe_payment-logo.svg" height="80px" width="80px" alt="Stripe Payment Logo">
 </a>
 <h2>Stripe Payment</h2>
-<p>Modern Stripe payments for Frappe and ERPNext</p>
+<p>Modern Stripe payments for Frappe apps</p>
 
 [![CI](https://github.com/aerele/stripe-payment/actions/workflows/ci.yml/badge.svg?branch=develop)](https://github.com/aerele/stripe-payment/actions/workflows/ci.yml)
 [![Linters](https://github.com/aerele/stripe-payment/actions/workflows/linter.yml/badge.svg?branch=develop)](https://github.com/aerele/stripe-payment/actions/workflows/linter.yml)
@@ -20,27 +20,26 @@
 
 ## Stripe Payment
 
-Stripe Payment is a standalone payment gateway for Frappe. It connects Stripe with Frappe applications through [Payment Core](https://github.com/aerele/payment-core) and adds ERPNext settlement and subscription workflows when ERPNext is installed.
+Stripe Payment is a standalone payment gateway for Frappe. It connects Stripe with any Frappe reference DocType through [Payment Core](https://github.com/aerele/payment-core), including custom order flows such as SpareHub.
 
 ## Key Features
 
 - **Modern checkout**: Accept one-time and recurring payments through Stripe-hosted Checkout with SCA and 3D Secure support.
 - **PaymentIntents**: Process payments using Stripe's PaymentIntents API, including flows that require additional customer authentication.
-- **ERPNext settlement**: Settle Payment Requests and create Payment Entries for full and partial payments.
+- **Generic payment records**: Store each checkout attempt, provider transaction ID, status, and paid timestamp in Payment Core’s Payment Transaction ledger.
 - **Customers and saved cards**: Reuse Stripe customers and save payment methods only with the customer's consent.
-- **Subscriptions**: Sync Subscription Plan prices, create Stripe subscriptions, and reconcile recurring invoices with ERPNext.
+- **Optional subscriptions**: ERPNext subscription workflows remain available when ERPNext is installed.
 - **Reliable webhooks**: Verify signatures, prevent duplicate processing, log events, and retry failed reconciliation jobs.
 
 ### Under the Hood
 
 - [**Frappe Framework**](https://github.com/frappe/frappe): The full-stack framework on which the app runs.
 - [**Payment Core**](https://github.com/aerele/payment-core): The shared payment gateway contracts and utilities used by the integration.
-- [**ERPNext**](https://github.com/frappe/erpnext): Provides Payment Request, Payment Entry, and Subscription workflows.
 - [**Stripe Python SDK**](https://github.com/stripe/stripe-python): Communicates with the Stripe API.
 
 ## Installation
 
-The `develop` branch requires Python 3.14 and compatible `develop` branches of Frappe and Payment Core. Install ERPNext before this app when you need its accounting and subscription workflows.
+The `develop` branch requires Python 3.14 and compatible `develop` branches of Frappe and Payment Core. ERPNext is optional.
 
 Set up a Frappe bench by following the [Frappe installation guide](https://docs.frappe.io/framework/user/en/installation), then run:
 
@@ -103,3 +102,11 @@ This project is licensed under the [MIT License](license.txt).
     </picture>
   </a>
 </div>
+
+
+## Where it lives in the desk
+
+Stripe Payment intentionally has **no app icon or workspace** — it is a payment_core
+plugin. Configure it from the **Payment Core workspace**: the Payment Gateway
+registry links to Stripe Settings, and the analytics dashboard's Gateways card
+shows its health.
