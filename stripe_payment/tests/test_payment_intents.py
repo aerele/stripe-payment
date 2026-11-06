@@ -179,19 +179,16 @@ class TestPaymentIntents(FrappeTestCase):
 		meta_mock = MagicMock()
 		meta_mock.has_field.return_value = True
 
+		# payment_core builds the PE through ERPNext's own builder on the
+		# request (create_payment_entry); there is no module-level
+		# get_payment_entry call and no nowdate stamp to patch anymore
+		pr.create_payment_entry = MagicMock(return_value=pe)
 		with (
 			patch("payment_core.utils.frappe.set_user"),
-			# nowdate() resolves the system timezone through a System Settings DB
-			# fetch on this branch; keep the db mocks from starving it.
-			patch("payment_core.utils.nowdate", return_value="2026-09-18"),
 			patch("payment_core.utils.frappe.get_meta", return_value=meta_mock),
 			patch("payment_core.utils.frappe.db.set_value"),
 			patch("payment_core.utils.frappe.db.table_exists", return_value=False),
 			patch("payment_core.utils.frappe.db.get_value", return_value="INR"),
-			patch(
-				"erpnext.accounts.doctype.payment_entry.payment_entry.get_payment_entry",
-				return_value=pe,
-			),
 			patch(
 				"erpnext.accounts.doctype.payment_request.payment_request.get_existing_payment_entry",
 				return_value=None,
@@ -250,11 +247,9 @@ class TestPaymentIntents(FrappeTestCase):
 
 		# db.get_value call order: (1) SI outstanding_amount → 500.0, (2) Company currency → "INR"
 		# is_multi_currency is False (both INR) so no conversion_rate / second outstanding read.
+		pr.create_payment_entry = MagicMock(return_value=pe)
 		with (
 			patch("payment_core.utils.frappe.set_user"),
-			# nowdate() resolves the system timezone through a System Settings DB
-			# fetch on this branch; keep the db mocks from starving it.
-			patch("payment_core.utils.nowdate", return_value="2026-09-18"),
 			patch("payment_core.utils.frappe.get_meta", return_value=meta_mock),
 			patch("payment_core.utils.frappe.db.set_value"),
 			patch("payment_core.utils.frappe.db.table_exists", return_value=False),
@@ -263,15 +258,12 @@ class TestPaymentIntents(FrappeTestCase):
 				side_effect=[500.0, "INR"],
 			),
 			patch(
-				"erpnext.accounts.doctype.payment_entry.payment_entry.get_payment_entry",
-				return_value=pe,
-			),
-			patch(
 				"erpnext.accounts.doctype.payment_request.payment_request.get_existing_payment_entry",
 				return_value="PE-1",
 			),
 		):
 			settle_payment_request(pr, controller=settings)
+		pr.create_payment_entry.assert_called_once_with(submit=False)
 		pe.insert.assert_called_once()
 		pe.submit.assert_called_once()
 
@@ -284,11 +276,10 @@ class TestPaymentIntents(FrappeTestCase):
 		meta_mock = MagicMock()
 		meta_mock.has_field.return_value = True
 
+		# no PE is expected at all: settlement must stop at the guard
+		pr.create_payment_entry = MagicMock()
 		with (
 			patch("payment_core.utils.frappe.set_user"),
-			# nowdate() resolves the system timezone through a System Settings DB
-			# fetch on this branch; keep the db mocks from starving it.
-			patch("payment_core.utils.nowdate", return_value="2026-09-18"),
 			patch("payment_core.utils.frappe.get_meta", return_value=meta_mock),
 			patch("payment_core.utils.frappe.db.set_value"),
 			patch("payment_core.utils.frappe.db.table_exists", return_value=False),
@@ -296,12 +287,11 @@ class TestPaymentIntents(FrappeTestCase):
 				"payment_core.utils.frappe.db.get_value",
 				return_value=0.0,
 			),
-			patch("erpnext.accounts.doctype.payment_entry.payment_entry.get_payment_entry") as gpe_mock,
 			patch(
 				"erpnext.accounts.doctype.payment_request.payment_request.get_existing_payment_entry",
 				return_value="PE-1",
 			),
 		):
 			settle_payment_request(pr, controller=settings)
-		# get_payment_entry NOT called — SI is fully paid, genuine duplicate.
-		gpe_mock.assert_not_called()
+		# the builder is never reached — SI is fully paid, genuine duplicate.
+		pr.create_payment_entry.assert_not_called()

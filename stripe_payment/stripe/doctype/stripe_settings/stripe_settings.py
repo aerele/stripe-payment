@@ -253,6 +253,15 @@ class StripeSettings(GatewayControllerMixin, Document):
 			warnings.append(_("Webhook endpoint is not registered on {0}").format(self.name))
 		return warnings
 
+	def is_webhook_configured(self):
+		"""Structured webhook signal for payment_core (language-safe).
+
+		Consumers must not match get_health_warnings() text — it is
+		translated. This reports the signing-secret fact directly; settlement
+		itself still needs the endpoint registered (see health warnings).
+		"""
+		return bool(self.webhook_secret)
+
 	def refund_transaction(
 		self, transaction_name: str, amount: float, reason: str = "", idempotency_key: str | None = None
 	):
